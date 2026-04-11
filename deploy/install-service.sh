@@ -17,9 +17,11 @@ SKIP_BUILD=false
 DRY_RUN=false
 ASSUME_YES=false
 CLI_PATH=""
+INSTALL_MAIN=true
 
 # Bridge defaults
 WITH_BRIDGE=false
+BRIDGE_ONLY=false
 BRIDGE_PORT="${BRIDGE_PORT:-3100}"
 BRIDGE_SERVICE_NAME="${T3CODE_BRIDGE_SERVICE_NAME:-t3code-bridge}"
 BRIDGE_T3_WS_URL="${T3_WS_URL:-ws://localhost:3773}"
@@ -88,6 +90,7 @@ Usage: $(basename "$0") [options]
 
 Bridge (Project Mythos) options:
   --with-bridge           Also install the bridge orchestrator as a companion service
+  --bridge-only           Build/install/start only the bridge service
   --bridge-port N         Bridge UI port (default: 3100, or \$BRIDGE_PORT)
   --bridge-name NAME      Bridge unit name (default: t3code-bridge, or \$T3CODE_BRIDGE_SERVICE_NAME)
   --bridge-t3-url URL     T3 server WS URL for bridge (default: ws://localhost:3773, or \$T3_WS_URL)
@@ -101,6 +104,7 @@ Examples:
   $(basename "$0") --repo /home/levi/t3code/t3code --yes
   $(basename "$0") --user --skip-build
   $(basename "$0") --with-bridge --bridge-env-file /home/levi/l3code/apps/bridge/.env
+  $(basename "$0") --bridge-only --bridge-env-file /home/levi/l3code/apps/bridge/.env
 EOF
 }
 
@@ -170,6 +174,12 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --with-bridge) WITH_BRIDGE=true; shift ;;
+    --bridge-only)
+      BRIDGE_ONLY=true
+      WITH_BRIDGE=true
+      INSTALL_MAIN=false
+      shift
+      ;;
     --bridge-port)
       BRIDGE_PORT="${2:-}"
       shift 2
@@ -205,7 +215,7 @@ if [[ "$(id -u)" -eq 0 ]]; then
 fi
 
 TOTAL_STEPS=5
-if [[ "$WITH_BRIDGE" == true ]]; then
+if [[ "$WITH_BRIDGE" == true && "$INSTALL_MAIN" == true ]]; then
   TOTAL_STEPS=6
 fi
 
@@ -227,9 +237,7 @@ BUN_PATH="$(command -v bun)"
 [[ "$BUN_PATH" == /* ]] || die "bun path must be absolute for systemd; got: $BUN_PATH"
 ok "Bun: ${BUN_PATH}"
 
-if [[ "$USER_SCOPE" == true ]]; then
-  command -v systemctl >/dev/null 2>&1 || die "systemctl not found"
-else
+if [[ "$DRY_RUN" != true ]]; then
   command -v systemctl >/dev/null 2>&1 || die "systemctl not found"
 fi
 
@@ -281,15 +289,23 @@ if [[ "$SKIP_BUILD" != true ]]; then
     ok "Dependencies installed"
   fi
 
-  step 3 "$TOTAL_STEPS" "Building (bun run build)"
+  if [[ "$BRIDGE_ONLY" == true ]]; then
+    step 3 "$TOTAL_STEPS" "Building bridge UI (bun run build:ui)"
+  else
+    step 3 "$TOTAL_STEPS" "Building"
+  fi
   if [[ "$DRY_RUN" == true ]]; then
-    info "Would run: (cd \"${REPO_ROOT}\" && bun run build)"
+    if [[ "$INSTALL_MAIN" == true ]]; then
+      info "Would run: (cd \"${REPO_ROOT}\" && bun run build)"
+    fi
     if [[ "$WITH_BRIDGE" == true ]]; then
       info "Would run: (cd \"${REPO_ROOT}/apps/bridge\" && bun run build:ui)"
     fi
   else
-    (cd "$REPO_ROOT" && bun run build)
-    ok "Build finished"
+    if [[ "$INSTALL_MAIN" == true ]]; then
+      (cd "$REPO_ROOT" && bun run build)
+      ok "Build finished"
+    fi
     if [[ "$WITH_BRIDGE" == true ]]; then
       (cd "${REPO_ROOT}/apps/bridge" && bun run build:ui)
       ok "Bridge UI built"
@@ -297,7 +313,11 @@ if [[ "$SKIP_BUILD" != true ]]; then
   fi
 else
   step 2 "$TOTAL_STEPS" "Skipping install & build (--skip-build)"
-  warn "Ensure you already ran: bun install && bun run build"
+  if [[ "$INSTALL_MAIN" == true ]]; then
+    warn "Ensure you already ran: bun install && bun run build"
+  else
+    warn "Ensure you already ran: bun install"
+  fi
   if [[ "$WITH_BRIDGE" == true ]]; then
     warn "And for bridge: (cd apps/bridge && bun run build:ui)"
   fi
@@ -308,10 +328,12 @@ fi
 step 4 "$TOTAL_STEPS" "Writing systemd unit(s)"
 
 UNIT_PATH=""
-if [[ "$USER_SCOPE" == true ]]; then
-  UNIT_PATH="${HOME}/.config/systemd/user/${SERVICE_NAME}.service"
-else
-  UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+if [[ "$INSTALL_MAIN" == true ]]; then
+  if [[ "$USER_SCOPE" == true ]]; then
+    UNIT_PATH="${HOME}/.config/systemd/user/${SERVICE_NAME}.service"
+  else
+    UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+  fi
 fi
 
 render_unit() {
@@ -369,9 +391,13 @@ UNIT
 }
 
 TMP_UNIT=""
-TMP_UNIT="$(mktemp)"
-trap 'rm -f "$TMP_UNIT" "${TMP_BRIDGE_UNIT:-}"' EXIT
-render_unit >"$TMP_UNIT"
+if [[ "$INSTALL_MAIN" == true ]]; then
+  TMP_UNIT="$(mktemp)"
+  trap 'rm -f "$TMP_UNIT" "${TMP_BRIDGE_UNIT:-}"' EXIT
+  render_unit >"$TMP_UNIT"
+else
+  trap 'rm -f "${TMP_BRIDGE_UNIT:-}"' EXIT
+fi
 
 # Bridge unit
 BRIDGE_UNIT_PATH=""
@@ -390,12 +416,16 @@ if [[ "$WITH_BRIDGE" == true ]]; then
     fi
 
     if [[ "$USER_SCOPE" == true ]]; then
+      local unit_dependencies=""
+      if [[ "$BRIDGE_ONLY" != true ]]; then
+        unit_dependencies="${SERVICE_NAME}.service"
+      fi
       cat <<UNIT
 [Unit]
 Description=T3 Code Bridge — Project Mythos (multi-agent orchestrator)
-After=network-online.target ${SERVICE_NAME}.service
+After=network-online.target${unit_dependencies:+ ${unit_dependencies}}
 Wants=network-online.target
-Requires=${SERVICE_NAME}.service
+${unit_dependencies:+Requires=${unit_dependencies}}
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -418,12 +448,16 @@ PrivateTmp=true
 WantedBy=default.target
 UNIT
     else
+      local unit_dependencies=""
+      if [[ "$BRIDGE_ONLY" != true ]]; then
+        unit_dependencies="${SERVICE_NAME}.service"
+      fi
       cat <<UNIT
 [Unit]
 Description=T3 Code Bridge — Project Mythos (multi-agent orchestrator)
-After=network-online.target ${SERVICE_NAME}.service
+After=network-online.target${unit_dependencies:+ ${unit_dependencies}}
 Wants=network-online.target
-Requires=${SERVICE_NAME}.service
+${unit_dependencies:+Requires=${unit_dependencies}}
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -455,10 +489,12 @@ UNIT
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
-  echo ""
-  echo -e "${DIM}--- ${SERVICE_NAME}.service (preview) ---${RESET}"
-  sed 's/^/  /' "$TMP_UNIT"
-  echo -e "${DIM}--- end ---${RESET}"
+  if [[ "$INSTALL_MAIN" == true ]]; then
+    echo ""
+    echo -e "${DIM}--- ${SERVICE_NAME}.service (preview) ---${RESET}"
+    sed 's/^/  /' "$TMP_UNIT"
+    echo -e "${DIM}--- end ---${RESET}"
+  fi
   if [[ "$WITH_BRIDGE" == true ]]; then
     echo ""
     echo -e "${DIM}--- ${BRIDGE_SERVICE_NAME}.service (preview) ---${RESET}"
@@ -466,7 +502,9 @@ if [[ "$DRY_RUN" == true ]]; then
     echo -e "${DIM}--- end ---${RESET}"
   fi
 else
-  ok "Unit file prepared (${UNIT_PATH})"
+  if [[ "$INSTALL_MAIN" == true ]]; then
+    ok "Unit file prepared (${UNIT_PATH})"
+  fi
   if [[ "$WITH_BRIDGE" == true ]]; then
     ok "Bridge unit file prepared (${BRIDGE_UNIT_PATH})"
   fi
@@ -477,22 +515,32 @@ step 5 "$TOTAL_STEPS" "Installing service(s)"
 
 if [[ "$DRY_RUN" == true ]]; then
   if [[ "$USER_SCOPE" == true ]]; then
-    info "Would: mkdir -p ~/.config/systemd/user && cp unit → ${UNIT_PATH}"
+    if [[ "$INSTALL_MAIN" == true ]]; then
+      info "Would: mkdir -p ~/.config/systemd/user && cp unit → ${UNIT_PATH}"
+    else
+      info "Would: mkdir -p ~/.config/systemd/user"
+    fi
     if [[ "$WITH_BRIDGE" == true ]]; then
       info "Would: cp bridge unit → ${BRIDGE_UNIT_PATH}"
     fi
     info "Would: systemctl --user daemon-reload"
-    info "Would: systemctl --user enable --now ${SERVICE_NAME}.service"
+    if [[ "$INSTALL_MAIN" == true ]]; then
+      info "Would: systemctl --user enable --now ${SERVICE_NAME}.service"
+    fi
     if [[ "$WITH_BRIDGE" == true ]]; then
       info "Would: systemctl --user enable --now ${BRIDGE_SERVICE_NAME}.service"
     fi
   else
-    info "Would: sudo cp → ${UNIT_PATH}"
+    if [[ "$INSTALL_MAIN" == true ]]; then
+      info "Would: sudo cp → ${UNIT_PATH}"
+    fi
     if [[ "$WITH_BRIDGE" == true ]]; then
       info "Would: sudo cp → ${BRIDGE_UNIT_PATH}"
     fi
     info "Would: sudo systemctl daemon-reload"
-    info "Would: sudo systemctl enable --now ${SERVICE_NAME}.service"
+    if [[ "$INSTALL_MAIN" == true ]]; then
+      info "Would: sudo systemctl enable --now ${SERVICE_NAME}.service"
+    fi
     if [[ "$WITH_BRIDGE" == true ]]; then
       info "Would: sudo systemctl enable --now ${BRIDGE_SERVICE_NAME}.service"
     fi
@@ -503,12 +551,14 @@ if [[ "$DRY_RUN" == true ]]; then
 fi
 
 echo ""
-echo -e "  ${DIM}Host${RESET}     ${HOST}"
-echo -e "  ${DIM}Port${RESET}     ${PORT}"
 echo -e "  ${DIM}HOME${RESET}     ${USER_HOME}"
 echo -e "  ${DIM}PATH${RESET}     ${SERVICE_PATH}"
-echo -e "  ${DIM}Unit${RESET}     ${UNIT_PATH}"
 echo -e "  ${DIM}Scope${RESET}    $([[ "$USER_SCOPE" == true ]] && echo user || echo system)"
+if [[ "$INSTALL_MAIN" == true ]]; then
+  echo -e "  ${DIM}Host${RESET}     ${HOST}"
+  echo -e "  ${DIM}Port${RESET}     ${PORT}"
+  echo -e "  ${DIM}Unit${RESET}     ${UNIT_PATH}"
+fi
 if [[ "$WITH_BRIDGE" == true ]]; then
   echo ""
   echo -e "  ${DIM}Bridge${RESET}"
@@ -525,9 +575,14 @@ if [[ ! -t 0 ]] && [[ "$ASSUME_YES" != true ]]; then
   die "No TTY: re-run with ${BOLD}--yes${RESET} for non-interactive install"
 fi
 
-SERVICES_LABEL="${SERVICE_NAME}.service"
-if [[ "$WITH_BRIDGE" == true ]]; then
+SERVICES_LABEL=""
+if [[ "$INSTALL_MAIN" == true ]]; then
+  SERVICES_LABEL="${SERVICE_NAME}.service"
+fi
+if [[ "$WITH_BRIDGE" == true && "$INSTALL_MAIN" == true ]]; then
   SERVICES_LABEL="${SERVICE_NAME}.service + ${BRIDGE_SERVICE_NAME}.service"
+elif [[ "$WITH_BRIDGE" == true ]]; then
+  SERVICES_LABEL="${BRIDGE_SERVICE_NAME}.service"
 fi
 
 if ! confirm "Install and start ${SERVICES_LABEL} now?"; then
@@ -537,26 +592,34 @@ fi
 
 if [[ "$USER_SCOPE" == true ]]; then
   mkdir -p "${HOME}/.config/systemd/user"
-  cp "$TMP_UNIT" "$UNIT_PATH"
+  if [[ "$INSTALL_MAIN" == true ]]; then
+    cp "$TMP_UNIT" "$UNIT_PATH"
+  fi
   if [[ "$WITH_BRIDGE" == true ]]; then
     cp "$TMP_BRIDGE_UNIT" "$BRIDGE_UNIT_PATH"
   fi
   systemctl --user daemon-reload
-  systemctl --user enable --now "${SERVICE_NAME}.service"
-  ok "User service enabled and started"
+  if [[ "$INSTALL_MAIN" == true ]]; then
+    systemctl --user enable --now "${SERVICE_NAME}.service"
+    ok "User service enabled and started"
+  fi
   if [[ "$WITH_BRIDGE" == true ]]; then
     systemctl --user enable --now "${BRIDGE_SERVICE_NAME}.service"
     ok "Bridge user service enabled and started"
   fi
   warn "For start-on-boot without login, run once: ${BOLD}loginctl enable-linger ${USER_NAME}${RESET}"
 else
-  sudo cp "$TMP_UNIT" "$UNIT_PATH"
+  if [[ "$INSTALL_MAIN" == true ]]; then
+    sudo cp "$TMP_UNIT" "$UNIT_PATH"
+  fi
   if [[ "$WITH_BRIDGE" == true ]]; then
     sudo cp "$TMP_BRIDGE_UNIT" "$BRIDGE_UNIT_PATH"
   fi
   sudo systemctl daemon-reload
-  sudo systemctl enable --now "${SERVICE_NAME}.service"
-  ok "System service enabled and started"
+  if [[ "$INSTALL_MAIN" == true ]]; then
+    sudo systemctl enable --now "${SERVICE_NAME}.service"
+    ok "System service enabled and started"
+  fi
   if [[ "$WITH_BRIDGE" == true ]]; then
     sudo systemctl enable --now "${BRIDGE_SERVICE_NAME}.service"
     ok "Bridge system service enabled and started"
@@ -564,7 +627,7 @@ else
 fi
 
 # ── bridge-specific footer ───────────────────────────────────
-if [[ "$WITH_BRIDGE" == true ]]; then
+if [[ "$WITH_BRIDGE" == true && "$INSTALL_MAIN" == true ]]; then
   step 6 "$TOTAL_STEPS" "Bridge service installed"
   echo ""
   echo -e "  ${CYAN}Status:${RESET}  systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) status ${BRIDGE_SERVICE_NAME}.service"
@@ -576,12 +639,20 @@ fi
 echo ""
 echo -e "${BOLD}${GREEN}Done.${RESET}"
 echo ""
-echo -e "  ${CYAN}Status:${RESET}  systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) status ${SERVICE_NAME}.service"
-echo -e "  ${CYAN}Logs:${RESET}    journalctl $([[ "$USER_SCOPE" == true ]] && echo --user -u "${SERVICE_NAME}.service" || echo -u "${SERVICE_NAME}.service") -f"
-echo -e "  ${CYAN}Stop:${RESET}    systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) stop ${SERVICE_NAME}.service"
-echo ""
-echo -e "  ${DIM}Open UI: http://127.0.0.1:${PORT}  (or your tailnet IP)${RESET}"
+if [[ "$INSTALL_MAIN" == true ]]; then
+  echo -e "  ${CYAN}Status:${RESET}  systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) status ${SERVICE_NAME}.service"
+  echo -e "  ${CYAN}Logs:${RESET}    journalctl $([[ "$USER_SCOPE" == true ]] && echo --user -u "${SERVICE_NAME}.service" || echo -u "${SERVICE_NAME}.service") -f"
+  echo -e "  ${CYAN}Stop:${RESET}    systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) stop ${SERVICE_NAME}.service"
+  echo ""
+  echo -e "  ${DIM}Open UI: http://127.0.0.1:${PORT}  (or your tailnet IP)${RESET}"
+fi
 if [[ "$WITH_BRIDGE" == true ]]; then
+  if [[ "$INSTALL_MAIN" != true ]]; then
+    echo -e "  ${CYAN}Status:${RESET}  systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) status ${BRIDGE_SERVICE_NAME}.service"
+    echo -e "  ${CYAN}Logs:${RESET}    journalctl $([[ "$USER_SCOPE" == true ]] && echo --user -u "${BRIDGE_SERVICE_NAME}.service" || echo -u "${BRIDGE_SERVICE_NAME}.service") -f"
+    echo -e "  ${CYAN}Stop:${RESET}    systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) stop ${BRIDGE_SERVICE_NAME}.service"
+    echo ""
+  fi
   echo -e "  ${DIM}Bridge:  http://127.0.0.1:${BRIDGE_PORT}${RESET}"
 fi
 echo ""
