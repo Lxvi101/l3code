@@ -20,6 +20,7 @@ import { createHistoryStore, type HistorySession } from "./history.ts";
 import { createLogger } from "./logger.ts";
 import { createStateManager } from "./state.ts";
 import type { BridgeConfig, ModelSelection, WorkflowContext } from "./types.ts";
+import { resolveT3WsUrl } from "./wsUrl.ts";
 import { getWorkflow } from "./workflows/index.ts";
 
 async function main(): Promise<void> {
@@ -37,9 +38,9 @@ async function main(): Promise<void> {
   eventBus.setHistory(history.list(), null);
 
   // ── Connect to T3 server ──────────────────────────────────────
-  const wsUrl = buildWsUrl(config);
+  const wsUrl = await resolveT3WsUrl(config.wsUrl, config.authToken, log);
   log.info(`Project Mythos started — UI at http://localhost:${config.bridgePort}`);
-  log.info(`Connecting to T3 server at ${config.wsUrl}...`);
+  log.info(`Connecting to T3 server at ${new URL(wsUrl).origin}/ws...`);
 
   const client = new ResilientT3Client(wsUrl, log);
 
@@ -356,14 +357,6 @@ function sysMsg(text: string, iteration = 0): UIMessage {
     timestamp: new Date().toISOString(),
     iteration,
   };
-}
-
-function buildWsUrl(config: BridgeConfig): string {
-  const base = config.wsUrl.replace(/\/+$/, "");
-  if (config.authToken) {
-    return `${base}?token=${encodeURIComponent(config.authToken)}`;
-  }
-  return base;
 }
 
 function formatModel(sel: ModelSelection): string {

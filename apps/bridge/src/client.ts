@@ -119,7 +119,7 @@ export class ResilientT3Client implements T3Client {
         return;
       }
 
-      // URL is fully constructed by main.ts (including /ws path and ?token= query)
+      // URL is fully constructed by main.ts (including /ws path and wsToken query)
       const ws = new WebSocket(this.url);
 
       ws.on("open", () => {

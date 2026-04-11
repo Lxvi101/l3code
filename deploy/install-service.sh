@@ -321,6 +321,8 @@ render_unit() {
 Description=T3 Code (Codex/Claude web UI)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -331,8 +333,6 @@ Environment="PATH=${SERVICE_PATH}"
 ExecStart=${BUN_PATH} run --cwd apps/server start -- --host ${HOST} --port ${PORT} --no-browser
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 NoNewPrivileges=true
 PrivateTmp=true
 
@@ -345,6 +345,8 @@ UNIT
 Description=T3 Code (Codex/Claude web UI)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -357,8 +359,6 @@ Environment="PATH=${SERVICE_PATH}"
 ExecStart=${BUN_PATH} run --cwd apps/server start -- --host ${HOST} --port ${PORT} --no-browser
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 NoNewPrivileges=true
 PrivateTmp=true
 
@@ -396,6 +396,8 @@ Description=T3 Code Bridge — Project Mythos (multi-agent orchestrator)
 After=network-online.target ${SERVICE_NAME}.service
 Wants=network-online.target
 Requires=${SERVICE_NAME}.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -409,8 +411,6 @@ ${env_file_line:+${env_file_line}
 }ExecStart=${BUN_PATH} run --cwd apps/bridge start
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 NoNewPrivileges=true
 PrivateTmp=true
 
@@ -424,6 +424,8 @@ Description=T3 Code Bridge — Project Mythos (multi-agent orchestrator)
 After=network-online.target ${SERVICE_NAME}.service
 Wants=network-online.target
 Requires=${SERVICE_NAME}.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -439,8 +441,6 @@ ${env_file_line:+${env_file_line}
 }ExecStart=${BUN_PATH} run --cwd apps/bridge start
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 NoNewPrivileges=true
 PrivateTmp=true
 

@@ -12,6 +12,8 @@
 Description=T3 Code (Codex/Claude web UI)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -26,9 +28,6 @@ ExecStart=/home/levi/.bun/bin/bun run --cwd apps/server start -- --host 0.0.0.0 
 
 Restart=always
 RestartSec=5
-# Avoid tight restart loops burning CPU if the app exits immediately
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Hardening (optional; relax if something breaks)
 NoNewPrivileges=true

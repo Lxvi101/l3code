@@ -13,6 +13,8 @@ Description=T3 Code Bridge — Project Mythos (multi-agent orchestrator)
 After=network-online.target t3code.service
 Wants=network-online.target
 Requires=t3code.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -27,9 +29,6 @@ ExecStart=/home/levi/.bun/bin/bun run --cwd apps/bridge start
 
 Restart=always
 RestartSec=5
-# Avoid tight restart loops burning CPU if the app exits immediately
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Hardening (optional; relax if something breaks)
 NoNewPrivileges=true
