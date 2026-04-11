@@ -1,0 +1,38 @@
+# T3 Code — systemd (runs on boot, restarts on crash)
+#
+# Automated install: ./deploy/install-service.sh  (see ./deploy/install-service.sh --help)
+#
+# Manual: set User/Group, WorkingDirectory, ExecStart (`which bun` as that user).
+# Services do not load nvm/login shells — set PATH so `codex` and `claude` resolve, e.g.:
+#   Environment="HOME=/home/levi"
+#   Environment="PATH=/home/levi/.local/bin:/home/levi/.nvm/versions/node/v22.22.1/bin:/usr/bin:/bin"
+# Or run: ./deploy/install-service.sh (builds PATH automatically).
+
+[Unit]
+Description=T3 Code (Codex/Claude web UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=levi
+Group=levi
+WorkingDirectory=/home/levi/t3code/t3code
+
+Environment=NODE_ENV=production
+Environment="HOME=/home/levi"
+Environment="PATH=/home/levi/.local/bin:/home/levi/.nvm/versions/node/v22.22.1/bin:/home/levi/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/levi/.bun/bin/bun run --cwd apps/server start -- --host 0.0.0.0 --port 3773 --no-browser
+
+Restart=always
+RestartSec=5
+# Avoid tight restart loops burning CPU if the app exits immediately
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Hardening (optional; relax if something breaks)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
