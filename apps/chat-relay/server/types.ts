@@ -78,15 +78,31 @@ export interface ChatPair {
   createdAt: string;
 }
 
+// ─── Thread summary (for the sidebar thread list) ───
+
+export interface ThreadSummary {
+  id: string;
+  projectId: string;
+  title: string;
+  messageCount: number;
+  lastMessagePreview: string;
+  lastActivityAt: string;
+  turnState: string | null;
+  /** If this thread belongs to a relay pair, the pair ID */
+  pairId: string | null;
+  pairSide: "A" | "B" | null;
+}
+
 // ─── WebSocket protocol: server → client ───
 
 export type ServerMessage =
   | { type: "connection-status"; t3Connected: boolean; t3Url: string | null }
-  | { type: "snapshot"; pairs: ChatPair[]; projects: T3Project[] }
+  | { type: "snapshot"; pairs: ChatPair[]; projects: T3Project[]; threads: ThreadSummary[] }
   | { type: "pair-created"; pair: ChatPair }
   | { type: "pair-updated"; pair: ChatPair }
   | { type: "pair-removed"; pairId: string }
   | { type: "new-message"; pairId: string; message: RelayMessage }
+  | { type: "threads-updated"; threads: ThreadSummary[] }
   | { type: "error"; message: string };
 
 // ─── WebSocket protocol: client → server ───

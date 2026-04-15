@@ -141,7 +141,7 @@ const server = Bun.serve<WsData>({
       );
 
       // Send initial state to the newly connected client
-      const { pairs, projects } = engine.getSnapshot();
+      const { pairs, projects, threads } = engine.getSnapshot();
       ws.send(
         JSON.stringify({
           type: "connection-status",
@@ -154,6 +154,7 @@ const server = Bun.serve<WsData>({
           type: "snapshot",
           pairs,
           projects,
+          threads,
         } satisfies ServerMessage),
       );
     },
@@ -195,6 +196,11 @@ console.log(`
   ║  Run "bun run dev:client" for the UI         ║
   ╚══════════════════════════════════════════════╝
 `);
+
+// Restore saved connection + pairs from disk
+engine.boot().catch((err) => {
+  console.error("[server] Boot failed:", err);
+});
 
 // Note: do NOT `export default server` — Bun's entrypoint auto-serve
 // feature would re-invoke Bun.serve() on the export, causing a recursive

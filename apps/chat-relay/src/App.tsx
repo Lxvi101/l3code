@@ -10,6 +10,7 @@ import {
 import { useRelay } from "./hooks/useRelay";
 import { PairSidebar } from "./components/PairSidebar";
 import { ChatPairView } from "./components/ChatPairView";
+import { ThreadView } from "./components/ThreadView";
 import { CreatePairDialog } from "./components/CreatePairDialog";
 
 function ConnectPanel({
@@ -81,18 +82,30 @@ function ConnectPanel({
   );
 }
 
+type Selection =
+  | { kind: "pair"; id: string }
+  | { kind: "thread"; id: string }
+  | null;
+
 export default function App() {
   const relay = useRelay();
-  const [selectedPairId, setSelectedPairId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection>(null);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
 
-  const selectedPair = relay.pairs.find((p) => p.id === selectedPairId);
+  const selectedPair =
+    selection?.kind === "pair"
+      ? relay.pairs.find((p) => p.id === selection.id)
+      : undefined;
 
-  const handleConnect = async (url: string, credential: string) => {
+  const selectedThread =
+    selection?.kind === "thread"
+      ? relay.threads.find((t) => t.id === selection.id)
+      : undefined;
+
+  const handleConnect = (url: string, credential: string) => {
     setIsConnecting(true);
     relay.connectToT3(url, credential);
-    // The status will be updated via WebSocket
     setTimeout(() => setIsConnecting(false), 3000);
   };
 
@@ -114,7 +127,6 @@ export default function App() {
   if (!relay.t3Connected) {
     return (
       <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">
-        {/* Error toast */}
         {relay.error && (
           <div className="border-b border-red-900/50 bg-red-950/30 px-6 py-2 text-center text-sm text-red-400">
             {relay.error}
@@ -126,7 +138,6 @@ export default function App() {
             </button>
           </div>
         )}
-
         <ConnectPanel
           onConnect={handleConnect}
           connecting={isConnecting}
@@ -148,7 +159,6 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-4">
-          {/* Error indicator */}
           {relay.error && (
             <span className="text-xs text-red-400">
               {relay.error}
@@ -161,12 +171,9 @@ export default function App() {
             </span>
           )}
 
-          {/* Connection status */}
           <div className="flex items-center gap-2 text-xs text-zinc-500">
             <Wifi className="size-3.5 text-emerald-500" />
-            <span className="text-emerald-500/70">
-              {relay.t3Url}
-            </span>
+            <span className="text-emerald-500/70">{relay.t3Url}</span>
           </div>
 
           <button
@@ -181,15 +188,16 @@ export default function App() {
 
       {/* Main content */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
         <PairSidebar
           pairs={relay.pairs}
-          selectedPairId={selectedPairId}
-          onSelect={setSelectedPairId}
+          threads={relay.threads}
+          selectedPairId={selection?.kind === "pair" ? selection.id : null}
+          selectedThreadId={selection?.kind === "thread" ? selection.id : null}
+          onSelectPair={(id) => setSelection({ kind: "pair", id })}
+          onSelectThread={(id) => setSelection({ kind: "thread", id })}
           onCreateNew={() => setShowCreateDialog(true)}
         />
 
-        {/* Main area */}
         <div className="flex-1">
           {selectedPair ? (
             <ChatPairView
@@ -198,15 +206,17 @@ export default function App() {
               onStop={relay.stopPair}
               onDelete={(id) => {
                 relay.deletePair(id);
-                setSelectedPairId(null);
+                setSelection(null);
               }}
             />
+          ) : selectedThread ? (
+            <ThreadView thread={selectedThread} />
           ) : (
             <div className="flex h-full items-center justify-center">
               <div className="text-center">
                 <Plug className="mx-auto size-12 text-zinc-800" />
                 <p className="mt-3 text-sm text-zinc-600">
-                  Select a pair from the sidebar, or create a new one.
+                  Select a pair or thread from the sidebar, or create a new pair.
                 </p>
                 <button
                   onClick={() => setShowCreateDialog(true)}
@@ -220,7 +230,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Create pair dialog */}
       {showCreateDialog && (
         <CreatePairDialog
           projects={relay.projects}

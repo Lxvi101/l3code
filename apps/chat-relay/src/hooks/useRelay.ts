@@ -5,6 +5,7 @@ import type {
   PairConfig,
   ServerMessage,
   T3Project,
+  ThreadSummary,
 } from "../types";
 
 interface RelayState {
@@ -13,6 +14,7 @@ interface RelayState {
   t3Url: string | null;
   pairs: ChatPair[];
   projects: T3Project[];
+  threads: ThreadSummary[];
   error: string | null;
 }
 
@@ -35,6 +37,7 @@ export function useRelay(): RelayState & RelayActions {
   const [t3Url, setT3Url] = useState<string | null>(null);
   const [pairs, setPairs] = useState<ChatPair[]>([]);
   const [projects, setProjects] = useState<T3Project[]>([]);
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const send = useCallback((msg: ClientMessage) => {
@@ -56,6 +59,7 @@ export function useRelay(): RelayState & RelayActions {
         case "snapshot":
           setPairs(msg.pairs);
           setProjects(msg.projects);
+          setThreads(msg.threads);
           break;
 
         case "pair-created":
@@ -82,6 +86,10 @@ export function useRelay(): RelayState & RelayActions {
           );
           break;
 
+        case "threads-updated":
+          setThreads(msg.threads);
+          break;
+
         case "error":
           setError(msg.message);
           break;
@@ -101,7 +109,6 @@ export function useRelay(): RelayState & RelayActions {
     ws.onopen = () => {
       setConnected(true);
       setError(null);
-      console.log("[relay-ui] Connected to relay server");
     };
 
     ws.onmessage = handleMessage;
@@ -109,9 +116,6 @@ export function useRelay(): RelayState & RelayActions {
     ws.onclose = () => {
       setConnected(false);
       wsRef.current = null;
-      console.log("[relay-ui] Disconnected from relay server, reconnecting...");
-
-      // Reconnect after delay
       reconnectTimer.current = setTimeout(connect, 2000);
     };
 
@@ -134,6 +138,7 @@ export function useRelay(): RelayState & RelayActions {
     t3Url,
     pairs,
     projects,
+    threads,
     error,
 
     connectToT3: useCallback(
@@ -141,32 +146,26 @@ export function useRelay(): RelayState & RelayActions {
         send({ type: "connect-t3", url, credential }),
       [send],
     ),
-
     disconnectFromT3: useCallback(
       () => send({ type: "disconnect-t3" }),
       [send],
     ),
-
     createPair: useCallback(
       (config: PairConfig) => send({ type: "create-pair", config }),
       [send],
     ),
-
     startPair: useCallback(
       (pairId: string) => send({ type: "start-pair", pairId }),
       [send],
     ),
-
     stopPair: useCallback(
       (pairId: string) => send({ type: "stop-pair", pairId }),
       [send],
     ),
-
     deletePair: useCallback(
       (pairId: string) => send({ type: "delete-pair", pairId }),
       [send],
     ),
-
     clearError: useCallback(() => setError(null), []),
   };
 }

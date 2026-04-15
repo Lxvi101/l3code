@@ -9,4 +9,5 @@ export type {
   ServerMessage,
   T3Project,
   ThreadInfo,
+  ThreadSummary,
 } from "../server/types";

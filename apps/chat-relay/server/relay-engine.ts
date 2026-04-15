@@ -2,20 +2,19 @@
  * Relay Engine
  *
  * Manages chat pairs that ping-pong messages between two T3 threads.
- *
- * Flow:
- * 1. Create Thread A and Thread B in T3
- * 2. Send initial message to Thread A
- * 3. Poll T3 snapshot for turn completion
- * 4. When Thread A completes → apply A→B modifications → send to Thread B
- * 5. When Thread B completes → apply B→A modifications → send to Thread A
- * 6. Repeat until stop signal detected, max turns reached, or manual stop
+ * Persists connection info and pair metadata to disk so they survive restarts.
+ * Hydrates message histories from T3 snapshots on reconnect.
  */
 
 import { T3Client } from "./t3-client";
+import {
+  loadState,
+  saveState,
+  type PersistedPair,
+  type PersistedState,
+} from "./store";
 import type {
   ChatPair,
-  ClientMessage,
   Modification,
   PairConfig,
   PairStatus,
@@ -24,6 +23,7 @@ import type {
   T3Message,
   T3Project,
   T3Thread,
+  ThreadSummary,
 } from "./types";
 
 type BroadcastFn = (msg: ServerMessage) => void;
@@ -34,32 +34,68 @@ export class RelayEngine {
   private t3Client: T3Client | null = null;
   private broadcast: BroadcastFn;
   private cachedProjects: T3Project[] = [];
+  private cachedThreads: ThreadSummary[] = [];
 
   /** Tracks which turn we're waiting on, per thread */
   private pendingTurns: Map<string, { pairId: string; side: "A" | "B" }> =
     new Map();
 
-  /**
-   * true once we've notified the UI about a connection problem.
-   * Stays true until we see sustained recovery (not a single lucky poll).
-   */
   private pollDegraded = false;
-
-  /** Consecutive successes needed after failure before we say "restored". */
   private successesSinceLastFailure = 0;
   private static readonly RECOVERY_THRESHOLD = 3;
-
-  /**
-   * Consecutive T3 fetch failures (tracked by T3Client) before we give up
-   * and fully disconnect. At 2s polling, 15 failures ≈ 30 seconds.
-   */
   private static readonly MAX_CONSECUTIVE_FAILURES = 15;
-
-  /** Polling interval in ms. Deliberately slow — turns take 10-120+ seconds. */
   private static readonly POLL_INTERVAL_MS = 2_000;
 
   constructor(broadcast: BroadcastFn) {
     this.broadcast = broadcast;
+  }
+
+  // ─── Boot: restore persisted state ───
+
+  async boot(): Promise<void> {
+    const state = loadState();
+    if (!state.connection) {
+      console.log("[relay] No saved connection found");
+      return;
+    }
+
+    console.log(
+      `[relay] Restoring saved connection to ${state.connection.url}...`,
+    );
+
+    try {
+      const client = new T3Client(state.connection.url);
+      await client.restoreToken(state.connection.bearerToken);
+      this.t3Client = client;
+
+      // Fetch snapshot and hydrate
+      const snapshot = await client.getSnapshot();
+      this.cachedProjects = snapshot.projects.map((p) => ({
+        id: p.id,
+        title: p.title,
+        workspaceRoot: p.workspaceRoot,
+      }));
+
+      // Restore pairs from persisted state, hydrating messages from T3
+      this.hydrateFromPersisted(state.pairs, snapshot.threads);
+      this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
+
+      this.broadcast({
+        type: "connection-status",
+        t3Connected: true,
+        t3Url: client.url,
+      });
+      this.broadcastFullSnapshot();
+
+      console.log(
+        `[relay] Restored: ${this.pairs.size} pairs, ${this.cachedProjects.length} projects, ${this.cachedThreads.length} threads`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[relay] Could not restore saved session: ${msg}`);
+      // Clear the bad saved connection
+      this.persist();
+    }
   }
 
   // ─── T3 Connection ───
@@ -77,7 +113,6 @@ export class RelayEngine {
     await client.authenticate(credential);
     this.t3Client = client;
 
-    // Initial snapshot to populate projects
     const snapshot = await client.getSnapshot();
     this.cachedProjects = snapshot.projects.map((p) => ({
       id: p.id,
@@ -85,24 +120,29 @@ export class RelayEngine {
       workspaceRoot: p.workspaceRoot,
     }));
 
+    // If we already have persisted pairs for this server, hydrate them
+    const state = loadState();
+    if (state.pairs.length > 0) {
+      this.hydrateFromPersisted(state.pairs, snapshot.threads);
+    }
+
+    this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
+
+    this.persist();
+
     this.broadcast({
       type: "connection-status",
       t3Connected: true,
       t3Url: url,
     });
-    this.broadcast({
-      type: "snapshot",
-      pairs: Array.from(this.pairs.values()),
-      projects: this.cachedProjects,
-    });
+    this.broadcastFullSnapshot();
 
     console.log(
-      `[relay] Connected to T3 at ${url}, ${this.cachedProjects.length} projects found`,
+      `[relay] Connected to T3 at ${url}, ${this.cachedProjects.length} projects, ${this.cachedThreads.length} threads`,
     );
   }
 
   disconnectFromT3(): void {
-    // Stop all running pairs
     for (const [id, pair] of this.pairs) {
       if (pair.status === "running") {
         this.updatePairStatus(id, "stopped");
@@ -111,6 +151,11 @@ export class RelayEngine {
     this.stopPolling();
     this.t3Client?.disconnect();
     this.t3Client = null;
+    this.cachedThreads = [];
+
+    // Clear persisted connection but keep pairs
+    this.persist();
+
     this.broadcast({
       type: "connection-status",
       t3Connected: false,
@@ -127,7 +172,6 @@ export class RelayEngine {
     const threadAId = `relay-a-${pairId.slice(0, 8)}`;
     const threadBId = `relay-b-${pairId.slice(0, 8)}`;
 
-    // Create both threads in T3
     await this.t3Client.createThread({
       threadId: threadAId,
       projectId: config.projectId,
@@ -158,12 +202,12 @@ export class RelayEngine {
     };
 
     this.pairs.set(pairId, pair);
+    this.persist();
     this.broadcast({ type: "pair-created", pair });
 
     console.log(
       `[relay] Created pair "${config.name}" (${pairId}): ${threadAId} <-> ${threadBId}`,
     );
-
     return pair;
   }
 
@@ -176,7 +220,6 @@ export class RelayEngine {
     this.updatePairStatus(pairId, "running");
     pair.waitingFor = "A";
 
-    // Send initial message to Thread A
     const initialMsg: RelayMessage = {
       id: crypto.randomUUID(),
       source: "system",
@@ -205,7 +248,6 @@ export class RelayEngine {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.updatePairStatus(pairId, "error", msg);
-      console.error(`[relay] Failed to start pair: ${msg}`);
     }
   }
 
@@ -213,25 +255,19 @@ export class RelayEngine {
     const pair = this.pairs.get(pairId);
     if (!pair) return;
 
-    // Interrupt any running turn
     if (pair.waitingFor && this.t3Client) {
       const threadId =
         pair.waitingFor === "A" ? pair.threadA.id : pair.threadB.id;
       try {
         await this.t3Client.interruptTurn(threadId);
-      } catch {
-        // Best-effort interrupt
-      }
+      } catch { /* best-effort */ }
     }
 
-    // Remove pending turn tracking
     this.pendingTurns.delete(pair.threadA.id);
     this.pendingTurns.delete(pair.threadB.id);
-
     this.updatePairStatus(pairId, "stopped");
     pair.waitingFor = null;
 
-    // Add system message
     const stopMsg: RelayMessage = {
       id: crypto.randomUUID(),
       source: "system",
@@ -243,10 +279,7 @@ export class RelayEngine {
     pair.messages.push(stopMsg);
     this.broadcast({ type: "new-message", pairId, message: stopMsg });
 
-    if (this.pendingTurns.size === 0) {
-      this.stopPolling();
-    }
-
+    if (this.pendingTurns.size === 0) this.stopPolling();
     console.log(`[relay] Stopped pair "${pair.name}"`);
   }
 
@@ -255,24 +288,21 @@ export class RelayEngine {
 
     const pair = this.pairs.get(pairId);
     if (pair && this.t3Client) {
-      // Clean up threads in T3
-      try {
-        await this.t3Client.deleteThread(pair.threadA.id);
-      } catch { /* best-effort */ }
-      try {
-        await this.t3Client.deleteThread(pair.threadB.id);
-      } catch { /* best-effort */ }
+      try { await this.t3Client.deleteThread(pair.threadA.id); } catch { /* */ }
+      try { await this.t3Client.deleteThread(pair.threadB.id); } catch { /* */ }
     }
 
     this.pairs.delete(pairId);
+    this.persist();
     this.broadcast({ type: "pair-removed", pairId });
     console.log(`[relay] Deleted pair ${pairId}`);
   }
 
-  getSnapshot(): { pairs: ChatPair[]; projects: T3Project[] } {
+  getSnapshot(): { pairs: ChatPair[]; projects: T3Project[]; threads: ThreadSummary[] } {
     return {
       pairs: Array.from(this.pairs.values()),
       projects: this.cachedProjects,
+      threads: this.cachedThreads,
     };
   }
 
@@ -309,19 +339,16 @@ export class RelayEngine {
       const failures = this.t3Client.consecutiveFailures;
       this.successesSinceLastFailure = 0;
 
-      // Log once on first failure, then stay quiet
       if (!this.pollDegraded) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[relay] T3 poll failed (will retry): ${msg}`);
         this.pollDegraded = true;
       }
 
-      // After sustained failures, give up entirely
       if (failures >= RelayEngine.MAX_CONSECUTIVE_FAILURES) {
         console.error(
-          `[relay] ${failures} consecutive poll failures (~${Math.round((failures * RelayEngine.POLL_INTERVAL_MS) / 1000)}s) — disconnecting from T3`,
+          `[relay] ${failures} consecutive poll failures — disconnecting`,
         );
-        // Notify UI before disconnecting
         this.broadcast({
           type: "error",
           message: "Lost connection to T3 server. Please reconnect.",
@@ -331,11 +358,8 @@ export class RelayEngine {
       return;
     }
 
-    // Success — track recovery
     if (this.pollDegraded) {
       this.successesSinceLastFailure++;
-      // Require several consecutive successes before declaring recovery,
-      // so a single lucky poll between timeouts doesn't flip-flop the UI.
       if (this.successesSinceLastFailure >= RelayEngine.RECOVERY_THRESHOLD) {
         console.log("[relay] T3 connection stable again");
         this.pollDegraded = false;
@@ -343,14 +367,15 @@ export class RelayEngine {
       }
     }
 
-    // Update cached projects
     this.cachedProjects = snapshot.projects.map((p) => ({
       id: p.id,
       title: p.title,
       workspaceRoot: p.workspaceRoot,
     }));
 
-    // Check each pending turn
+    // Update thread list on every successful poll
+    this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
+
     for (const [threadId, pending] of Array.from(this.pendingTurns.entries())) {
       const thread = snapshot.threads.find(
         (t: T3Thread) => t.id === threadId,
@@ -366,19 +391,12 @@ export class RelayEngine {
       const turnState = thread.latestTurn.state;
 
       if (turnState === "completed") {
-        // Turn is done — get the assistant's response
         const assistantMsg = this.getLastAssistantMessage(thread);
         if (assistantMsg) {
-          await this.handleTurnCompletion(
-            pair,
-            pending.side,
-            assistantMsg,
-            thread,
-          );
+          await this.handleTurnCompletion(pair, pending.side, assistantMsg, thread);
         }
         this.pendingTurns.delete(threadId);
       } else if (turnState === "error") {
-        // Turn errored
         const errorText =
           thread.session?.lastError ?? "Turn completed with error";
         this.updatePairStatus(pending.pairId, "error", errorText);
@@ -393,19 +411,11 @@ export class RelayEngine {
           turnNumber: pair.turnCount,
         };
         pair.messages.push(errMsg);
-        this.broadcast({
-          type: "new-message",
-          pairId: pending.pairId,
-          message: errMsg,
-        });
+        this.broadcast({ type: "new-message", pairId: pending.pairId, message: errMsg });
       }
-      // If still "running", we just wait for next tick
     }
 
-    // If no more pending turns, stop polling
-    if (this.pendingTurns.size === 0) {
-      this.stopPolling();
-    }
+    if (this.pendingTurns.size === 0) this.stopPolling();
   }
 
   private async handleTurnCompletion(
@@ -416,7 +426,6 @@ export class RelayEngine {
   ): Promise<void> {
     const responseText = assistantMsg.text;
 
-    // Record the assistant's response
     const responseMessage: RelayMessage = {
       id: crypto.randomUUID(),
       source: side,
@@ -426,11 +435,7 @@ export class RelayEngine {
       turnNumber: pair.turnCount,
     };
     pair.messages.push(responseMessage);
-    this.broadcast({
-      type: "new-message",
-      pairId: pair.id,
-      message: responseMessage,
-    });
+    this.broadcast({ type: "new-message", pairId: pair.id, message: responseMessage });
 
     // Check stop signal
     if (pair.config.stopSignal) {
@@ -446,33 +451,17 @@ export class RelayEngine {
             turnNumber: pair.turnCount,
           };
           pair.messages.push(stopMsg);
-          this.broadcast({
-            type: "new-message",
-            pairId: pair.id,
-            message: stopMsg,
-          });
+          this.broadcast({ type: "new-message", pairId: pair.id, message: stopMsg });
           this.updatePairStatus(pair.id, "completed");
           pair.waitingFor = null;
-          console.log(
-            `[relay] Stop signal detected in pair "${pair.name}" from side ${side}`,
-          );
           return;
         }
-      } catch {
-        // Invalid regex — ignore
-      }
+      } catch { /* invalid regex */ }
     }
 
-    // Increment turn count on full round-trip (B just responded)
-    if (side === "B") {
-      pair.turnCount++;
-    }
+    if (side === "B") pair.turnCount++;
 
-    // Check max turns
-    if (
-      pair.config.maxTurns > 0 &&
-      pair.turnCount >= pair.config.maxTurns
-    ) {
+    if (pair.config.maxTurns > 0 && pair.turnCount >= pair.config.maxTurns) {
       const maxMsg: RelayMessage = {
         id: crypto.randomUUID(),
         source: "system",
@@ -482,49 +471,34 @@ export class RelayEngine {
         turnNumber: pair.turnCount,
       };
       pair.messages.push(maxMsg);
-      this.broadcast({
-        type: "new-message",
-        pairId: pair.id,
-        message: maxMsg,
-      });
+      this.broadcast({ type: "new-message", pairId: pair.id, message: maxMsg });
       this.updatePairStatus(pair.id, "completed");
       pair.waitingFor = null;
-      console.log(
-        `[relay] Max turns reached for pair "${pair.name}"`,
-      );
       return;
     }
 
-    // Determine next target
     const nextSide: "A" | "B" = side === "A" ? "B" : "A";
-    const nextThreadId =
-      nextSide === "A" ? pair.threadA.id : pair.threadB.id;
+    const nextThreadId = nextSide === "A" ? pair.threadA.id : pair.threadB.id;
     const modifications =
-      side === "A"
-        ? pair.config.modificationsAtoB
-        : pair.config.modificationsBtoA;
+      side === "A" ? pair.config.modificationsAtoB : pair.config.modificationsBtoA;
 
-    // Apply modifications
     const modifiedText = applyModifications(responseText, modifications);
+    const wasModified = modifiedText !== responseText;
 
-    // Record the relayed message
-    const relayedMessage: RelayMessage = {
-      id: crypto.randomUUID(),
-      source: side,
-      role: "user",
-      originalText: responseText,
-      relayedText: modifiedText !== responseText ? modifiedText : undefined,
-      timestamp: new Date().toISOString(),
-      turnNumber: side === "A" ? pair.turnCount : pair.turnCount + 1,
-    };
-    pair.messages.push(relayedMessage);
-    this.broadcast({
-      type: "new-message",
-      pairId: pair.id,
-      message: relayedMessage,
-    });
+    if (wasModified) {
+      const relayedMessage: RelayMessage = {
+        id: crypto.randomUUID(),
+        source: side,
+        role: "user",
+        originalText: responseText,
+        relayedText: modifiedText,
+        timestamp: new Date().toISOString(),
+        turnNumber: side === "A" ? pair.turnCount : pair.turnCount + 1,
+      };
+      pair.messages.push(relayedMessage);
+      this.broadcast({ type: "new-message", pairId: pair.id, message: relayedMessage });
+    }
 
-    // Send to the other thread
     try {
       await this.t3Client!.startTurn({
         threadId: nextThreadId,
@@ -534,53 +508,161 @@ export class RelayEngine {
       });
 
       pair.waitingFor = nextSide;
-      this.pendingTurns.set(nextThreadId, {
-        pairId: pair.id,
-        side: nextSide,
-      });
+      this.pendingTurns.set(nextThreadId, { pairId: pair.id, side: nextSide });
       this.ensurePolling();
-
       this.broadcast({ type: "pair-updated", pair });
 
       console.log(
-        `[relay] Relayed ${side} → ${nextSide} for pair "${pair.name}" (turn ${pair.turnCount})`,
+        `[relay] Relayed ${side} -> ${nextSide} for pair "${pair.name}" (turn ${pair.turnCount})`,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.updatePairStatus(pair.id, "error", msg);
-      console.error(`[relay] Failed to relay message: ${msg}`);
     }
+  }
+
+  // ─── Hydration: rebuild pair messages from T3 thread history ───
+
+  private hydrateFromPersisted(
+    persisted: PersistedPair[],
+    threads: T3Thread[],
+  ): void {
+    for (const pp of persisted) {
+      // Skip if we already have this pair loaded (e.g. from a previous boot)
+      if (this.pairs.has(pp.id)) continue;
+
+      const threadA = threads.find((t) => t.id === pp.threadAId);
+      const threadB = threads.find((t) => t.id === pp.threadBId);
+
+      // Rebuild messages from both threads
+      const messages: RelayMessage[] = [];
+      let turnNumber = 0;
+
+      if (threadA && threadB) {
+        // Interleave messages chronologically from both threads
+        const allT3Msgs: { msg: T3Message; side: "A" | "B" }[] = [
+          ...threadA.messages.map((m) => ({ msg: m, side: "A" as const })),
+          ...threadB.messages.map((m) => ({ msg: m, side: "B" as const })),
+        ].sort(
+          (a, b) =>
+            new Date(a.msg.createdAt).getTime() -
+            new Date(b.msg.createdAt).getTime(),
+        );
+
+        for (const { msg, side } of allT3Msgs) {
+          if (msg.streaming) continue; // skip incomplete streaming messages
+          messages.push({
+            id: msg.id,
+            source: side,
+            role: msg.role,
+            originalText: msg.text,
+            timestamp: msg.createdAt,
+            turnNumber,
+          });
+          // Count round-trips: after B's assistant response
+          if (msg.role === "assistant" && side === "B") turnNumber++;
+        }
+      }
+
+      const pair: ChatPair = {
+        id: pp.id,
+        name: pp.name,
+        status: messages.length > 0 ? "stopped" : "idle",
+        threadA: { id: pp.threadAId, label: pp.threadALabel },
+        threadB: { id: pp.threadBId, label: pp.threadBLabel },
+        config: pp.config,
+        messages,
+        turnCount: turnNumber,
+        waitingFor: null,
+        createdAt: pp.createdAt,
+      };
+
+      this.pairs.set(pp.id, pair);
+    }
+  }
+
+  // ─── Thread summaries for the UI ───
+
+  private buildThreadSummaries(threads: T3Thread[]): ThreadSummary[] {
+    // Build a lookup: threadId -> { pairId, side }
+    const pairLookup = new Map<string, { pairId: string; side: "A" | "B" }>();
+    for (const pair of this.pairs.values()) {
+      pairLookup.set(pair.threadA.id, { pairId: pair.id, side: "A" });
+      pairLookup.set(pair.threadB.id, { pairId: pair.id, side: "B" });
+    }
+
+    return threads.map((t): ThreadSummary => {
+      const lastMsg = t.messages[t.messages.length - 1];
+      const pairInfo = pairLookup.get(t.id);
+
+      return {
+        id: t.id,
+        projectId: t.projectId,
+        title: t.title,
+        messageCount: t.messages.length,
+        lastMessagePreview: lastMsg
+          ? lastMsg.text.slice(0, 80)
+          : "",
+        lastActivityAt: lastMsg?.updatedAt ?? "",
+        turnState: t.latestTurn?.state ?? null,
+        pairId: pairInfo?.pairId ?? null,
+        pairSide: pairInfo?.side ?? null,
+      };
+    });
+  }
+
+  // ─── Persistence ───
+
+  private persist(): void {
+    const state: PersistedState = {
+      version: 1,
+      connection:
+        this.t3Client?.connected && this.t3Client.token
+          ? { url: this.t3Client.url, bearerToken: this.t3Client.token }
+          : null,
+      pairs: Array.from(this.pairs.values()).map(
+        (p): PersistedPair => ({
+          id: p.id,
+          name: p.name,
+          threadAId: p.threadA.id,
+          threadALabel: p.threadA.label,
+          threadBId: p.threadB.id,
+          threadBLabel: p.threadB.label,
+          config: p.config,
+          createdAt: p.createdAt,
+        }),
+      ),
+    };
+    saveState(state);
   }
 
   // ─── Helpers ───
 
-  private getLastAssistantMessage(
-    thread: T3Thread,
-  ): T3Message | null {
-    // Find the message matching the latest turn's assistant message,
-    // or fall back to the last assistant message in the thread
+  private broadcastFullSnapshot(): void {
+    this.broadcast({
+      type: "snapshot",
+      pairs: Array.from(this.pairs.values()),
+      projects: this.cachedProjects,
+      threads: this.cachedThreads,
+    });
+  }
+
+  private getLastAssistantMessage(thread: T3Thread): T3Message | null {
     if (thread.latestTurn?.assistantMessageId) {
       const msg = thread.messages.find(
         (m) => m.id === thread.latestTurn!.assistantMessageId,
       );
       if (msg) return msg;
     }
-
-    // Fallback: last assistant message
     for (let i = thread.messages.length - 1; i >= 0; i--) {
       if (thread.messages[i].role === "assistant" && !thread.messages[i].streaming) {
         return thread.messages[i];
       }
     }
-
     return null;
   }
 
-  private updatePairStatus(
-    pairId: string,
-    status: PairStatus,
-    error?: string,
-  ): void {
+  private updatePairStatus(pairId: string, status: PairStatus, error?: string): void {
     const pair = this.pairs.get(pairId);
     if (!pair) return;
     pair.status = status;
@@ -596,7 +678,6 @@ export function applyModifications(
   modifications: Modification[],
 ): string {
   let result = text;
-
   for (const mod of modifications) {
     switch (mod.type) {
       case "prefix":
@@ -608,19 +689,14 @@ export function applyModifications(
       case "replace":
         if (mod.pattern) {
           try {
-            const regex = new RegExp(mod.pattern, "g");
-            result = result.replace(regex, mod.value);
-          } catch {
-            // Invalid regex — skip
-          }
+            result = result.replace(new RegExp(mod.pattern, "g"), mod.value);
+          } catch { /* invalid regex */ }
         }
         break;
       case "wrap":
-        // The value is a template with {{message}} placeholder
         result = mod.value.replace(/\{\{message\}\}/g, result);
         break;
     }
   }
-
   return result;
 }

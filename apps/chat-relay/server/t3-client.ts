@@ -33,6 +33,11 @@ export class T3Client {
     return this.baseUrl;
   }
 
+  /** The current bearer token (for persistence). */
+  get token(): string | null {
+    return this.bearerToken;
+  }
+
   /**
    * Authenticate with T3 Code using a pairing credential.
    * Obtains a bearer token for subsequent API calls.
@@ -57,6 +62,30 @@ export class T3Client {
     console.log(
       `[t3-client] Authenticated with T3 at ${this.baseUrl} (expires: ${data.expiresAt})`,
     );
+  }
+
+  /**
+   * Restore a previously saved bearer token.
+   * Validates it with a lightweight session check.
+   */
+  async restoreToken(token: string): Promise<void> {
+    this.bearerToken = token;
+    // Verify the token still works
+    const res = await fetch(`${this.baseUrl}/api/auth/session`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) {
+      this.bearerToken = null;
+      throw new Error(`Saved session expired or invalid (${res.status})`);
+    }
+    const data = await res.json();
+    if (!data.authenticated) {
+      this.bearerToken = null;
+      throw new Error("Saved session is no longer authenticated");
+    }
+    this._connected = true;
+    console.log("[t3-client] Restored saved session");
   }
 
   /**
