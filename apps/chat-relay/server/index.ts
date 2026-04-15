@@ -16,6 +16,7 @@ import { RelayEngine } from "./relay-engine";
 import type { ClientMessage, ServerMessage } from "./types";
 
 const PORT = Number(process.env.RELAY_SERVER_PORT ?? 4400);
+const HOST = process.env.RELAY_SERVER_HOST ?? "0.0.0.0";
 
 // Resolve dist-client relative to this file, not CWD.
 // systemd sets WorkingDirectory to repo root but --cwd only affects bun's
@@ -97,6 +98,7 @@ async function handleClientMessage(msg: ClientMessage, ws: ServerWebSocket<WsDat
 
 const server = Bun.serve<WsData>({
   port: PORT,
+  hostname: HOST,
 
   // fetch must be synchronous for WebSocket upgrades to work in Bun.
   // All async work happens inside the websocket handlers instead.
@@ -189,15 +191,11 @@ const server = Bun.serve<WsData>({
   },
 });
 
-console.log(`Started development server: http://localhost:${PORT}`);
 console.log(`
   ╔══════════════════════════════════════════════╗
-  ║         Chat Relay Server                    ║
-  ║                                              ║
-  ║  Server:   http://localhost:${PORT}            ║
-  ║  WebSocket: ws://localhost:${PORT}/relay-ws     ║
-  ║                                              ║
-  ║  Run "bun run dev:client" for the UI         ║
+  ║         THE RELAY — Chat Relay Server        ║
+  ╠══════════════════════════════════════════════╣
+  ║  http://${HOST}:${PORT}                        ║
   ╚══════════════════════════════════════════════╝
 `);
 
