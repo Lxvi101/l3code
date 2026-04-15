@@ -39,10 +39,34 @@ export class T3Client {
   }
 
   /**
-   * Authenticate with T3 Code using a pairing credential.
-   * Obtains a bearer token for subsequent API calls.
+   * Authenticate with T3 Code.
+   * Accepts either a one-time pairing credential OR a direct bearer token
+   * (from `t3 auth session issue --role owner`).
+   * Tries the credential as a bearer token first, then falls back to bootstrap.
    */
   async authenticate(credential: string): Promise<void> {
+    // 1. Try using it as a direct bearer token
+    try {
+      const sessionRes = await fetch(`${this.baseUrl}/api/auth/session`, {
+        headers: { Authorization: `Bearer ${credential}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (sessionRes.ok) {
+        const session = await sessionRes.json();
+        if (session.authenticated && session.role === "owner") {
+          this.bearerToken = credential;
+          this._connected = true;
+          console.log(
+            `[t3-client] Authenticated with direct bearer token (role: ${session.role}, expires: ${session.expiresAt})`,
+          );
+          return;
+        }
+      }
+    } catch {
+      // Not a valid bearer token — try bootstrap below
+    }
+
+    // 2. Fall back to pairing credential → bearer token bootstrap
     const res = await fetch(`${this.baseUrl}/api/auth/bootstrap/bearer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -58,7 +82,7 @@ export class T3Client {
     this.bearerToken = data.sessionToken;
     this._connected = true;
     console.log(
-      `[t3-client] Authenticated with T3 at ${this.baseUrl} (expires: ${data.expiresAt})`,
+      `[t3-client] Authenticated via pairing bootstrap (expires: ${data.expiresAt})`,
     );
   }
 
