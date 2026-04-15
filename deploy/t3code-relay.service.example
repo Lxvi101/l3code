@@ -1,15 +1,16 @@
-# T3 Code Bridge (Project Mythos) — systemd (runs on boot, restarts on crash)
+# THE RELAY — Chat Relay service for T3 Code (systemd, runs on boot, restarts on crash)
 #
-# Automated install: ./deploy/install-service.sh --with-bridge  (see --help)
+# Automated install: ./deploy/install-service.sh --with-relay  (see --help)
+#
+# THE RELAY connects to a running T3 Code server and creates "chat pairs" —
+# two AI threads that automatically ping-pong messages to each other.
+# See apps/chat-relay/bridge.md for full documentation.
 #
 # Manual: set User/Group, WorkingDirectory, ExecStart (`which bun` as that user).
-# Services do not load nvm/login shells — set PATH so `codex` and `claude` resolve, e.g.:
-#   Environment="HOME=/home/levi"
-#   Environment="PATH=/home/levi/.local/bin:/home/levi/.nvm/versions/node/v22.22.1/bin:/usr/bin:/bin"
-# Or run: ./deploy/install-service.sh --with-bridge (builds PATH automatically).
+# Services do not load nvm/login shells — set PATH explicitly.
 
 [Unit]
-Description=T3 Code Bridge — Project Mythos (multi-agent orchestrator)
+Description=THE RELAY — T3 Code Chat Relay (agent-to-agent ping-pong)
 After=network-online.target t3code.service
 Wants=network-online.target
 Requires=t3code.service
@@ -25,7 +26,8 @@ WorkingDirectory=/home/levi/t3code/t3code
 Environment=NODE_ENV=production
 Environment="HOME=/home/levi"
 Environment="PATH=/home/levi/.local/bin:/home/levi/.nvm/versions/node/v22.22.1/bin:/home/levi/.bun/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/home/levi/.bun/bin/bun run --cwd apps/bridge start
+Environment="RELAY_SERVER_PORT=4400"
+ExecStart=/home/levi/.bun/bin/bun run --cwd apps/chat-relay start
 
 Restart=always
 RestartSec=5

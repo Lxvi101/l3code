@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install T3 Code (and optionally the Bridge/Mythos orchestrator) as systemd services.
+# Install T3 Code (and optionally THE RELAY) as systemd services.
 # Run from anywhere: ./deploy/install-service.sh   or   bash deploy/install-service.sh
 
 set -euo pipefail
@@ -19,13 +19,11 @@ ASSUME_YES=false
 CLI_PATH=""
 INSTALL_MAIN=true
 
-# Bridge defaults
-WITH_BRIDGE=false
-BRIDGE_ONLY=false
-BRIDGE_PORT="${BRIDGE_PORT:-3100}"
-BRIDGE_SERVICE_NAME="${T3CODE_BRIDGE_SERVICE_NAME:-t3code-bridge}"
-BRIDGE_T3_WS_URL="${T3_WS_URL:-ws://localhost:3773}"
-BRIDGE_ENV_FILE=""
+# Relay defaults
+WITH_RELAY=false
+RELAY_ONLY=false
+RELAY_PORT="${RELAY_SERVER_PORT:-4400}"
+RELAY_SERVICE_NAME="${T3CODE_RELAY_SERVICE_NAME:-t3code-relay}"
 
 # ── styling (skip if not a TTY) ───────────────────────────────
 if [[ -t 1 ]]; then
@@ -88,23 +86,21 @@ Usage: $(basename "$0") [options]
   -y, --yes         Non-interactive (no confirmation before install)
   -h, --help        Show this help
 
-Bridge (Project Mythos) options:
-  --with-bridge           Also install the bridge orchestrator as a companion service
-  --bridge-only           Build/install/start only the bridge service
-  --bridge-port N         Bridge UI port (default: 3100, or \$BRIDGE_PORT)
-  --bridge-name NAME      Bridge unit name (default: t3code-bridge, or \$T3CODE_BRIDGE_SERVICE_NAME)
-  --bridge-t3-url URL     T3 server WS URL for bridge (default: ws://localhost:3773, or \$T3_WS_URL)
-  --bridge-env-file PATH  .env file to load in the bridge service (EnvironmentFile=)
+THE RELAY options:
+  --with-relay            Also install THE RELAY as a companion service
+  --relay-only            Build/install/start only THE RELAY service
+  --relay-port N          Relay server port (default: 4400, or \$RELAY_SERVER_PORT)
+  --relay-name NAME       Relay unit name (default: t3code-relay, or \$T3CODE_RELAY_SERVICE_NAME)
 
 Env: \$T3CODE_REPO, \$T3CODE_PORT, \$T3CODE_HOST, \$T3CODE_SERVICE_NAME, \$T3CODE_SERVICE_PATH
-     \$BRIDGE_PORT, \$T3CODE_BRIDGE_SERVICE_NAME, \$T3_WS_URL
+     \$RELAY_SERVER_PORT, \$T3CODE_RELAY_SERVICE_NAME
 
 Examples:
   $(basename "$0")
   $(basename "$0") --repo /home/levi/t3code/t3code --yes
   $(basename "$0") --user --skip-build
-  $(basename "$0") --with-bridge --bridge-env-file /home/levi/l3code/apps/bridge/.env
-  $(basename "$0") --bridge-only --bridge-env-file /home/levi/l3code/apps/bridge/.env
+  $(basename "$0") --with-relay
+  $(basename "$0") --relay-only --relay-port 4400
 EOF
 }
 
@@ -173,28 +169,19 @@ while [[ $# -gt 0 ]]; do
       [[ -n "$CLI_PATH" ]] || die "--path requires a value"
       shift 2
       ;;
-    --with-bridge) WITH_BRIDGE=true; shift ;;
-    --bridge-only)
-      BRIDGE_ONLY=true
-      WITH_BRIDGE=true
+    --with-relay) WITH_RELAY=true; shift ;;
+    --relay-only)
+      RELAY_ONLY=true
+      WITH_RELAY=true
       INSTALL_MAIN=false
       shift
       ;;
-    --bridge-port)
-      BRIDGE_PORT="${2:-}"
+    --relay-port)
+      RELAY_PORT="${2:-}"
       shift 2
       ;;
-    --bridge-name)
-      BRIDGE_SERVICE_NAME="${2:-}"
-      shift 2
-      ;;
-    --bridge-t3-url)
-      BRIDGE_T3_WS_URL="${2:-}"
-      shift 2
-      ;;
-    --bridge-env-file)
-      BRIDGE_ENV_FILE="${2:-}"
-      [[ -n "$BRIDGE_ENV_FILE" ]] || die "--bridge-env-file requires a path"
+    --relay-name)
+      RELAY_SERVICE_NAME="${2:-}"
       shift 2
       ;;
     --user) USER_SCOPE=true; shift ;;
@@ -215,7 +202,7 @@ if [[ "$(id -u)" -eq 0 ]]; then
 fi
 
 TOTAL_STEPS=5
-if [[ "$WITH_BRIDGE" == true && "$INSTALL_MAIN" == true ]]; then
+if [[ "$WITH_RELAY" == true && "$INSTALL_MAIN" == true ]]; then
   TOTAL_STEPS=6
 fi
 
@@ -226,10 +213,10 @@ step 1 "$TOTAL_STEPS" "Checking repository"
 
 ok "Repository: ${BOLD}${REPO_ROOT}${RESET}"
 
-if [[ "$WITH_BRIDGE" == true ]]; then
-  [[ -f "${REPO_ROOT}/apps/bridge/package.json" ]] ||
-    die "Bridge not found: ${REPO_ROOT} (missing apps/bridge/package.json)"
-  ok "Bridge: ${BOLD}${REPO_ROOT}/apps/bridge${RESET}"
+if [[ "$WITH_RELAY" == true ]]; then
+  [[ -f "${REPO_ROOT}/apps/chat-relay/package.json" ]] ||
+    die "THE RELAY not found: ${REPO_ROOT} (missing apps/chat-relay/package.json)"
+  ok "THE RELAY: ${BOLD}${REPO_ROOT}/apps/chat-relay${RESET}"
 fi
 
 command -v bun >/dev/null 2>&1 || die "bun not found in PATH. Install Bun first: https://bun.sh"
@@ -271,14 +258,6 @@ else
   warn "claude not on service PATH (only needed for Claude)"
 fi
 
-if [[ "$WITH_BRIDGE" == true && -n "$BRIDGE_ENV_FILE" ]]; then
-  if [[ -f "$BRIDGE_ENV_FILE" ]]; then
-    ok "Bridge EnvironmentFile: ${BRIDGE_ENV_FILE}"
-  else
-    warn "Bridge EnvironmentFile does not exist yet: ${BRIDGE_ENV_FILE}"
-  fi
-fi
-
 # ── build ─────────────────────────────────────────────────────
 if [[ "$SKIP_BUILD" != true ]]; then
   step 2 "$TOTAL_STEPS" "Installing dependencies (bun install)"
@@ -289,8 +268,8 @@ if [[ "$SKIP_BUILD" != true ]]; then
     ok "Dependencies installed"
   fi
 
-  if [[ "$BRIDGE_ONLY" == true ]]; then
-    step 3 "$TOTAL_STEPS" "Building bridge UI (bun run build:ui)"
+  if [[ "$RELAY_ONLY" == true ]]; then
+    step 3 "$TOTAL_STEPS" "Building THE RELAY"
   else
     step 3 "$TOTAL_STEPS" "Building"
   fi
@@ -298,17 +277,17 @@ if [[ "$SKIP_BUILD" != true ]]; then
     if [[ "$INSTALL_MAIN" == true ]]; then
       info "Would run: (cd \"${REPO_ROOT}\" && bun run build)"
     fi
-    if [[ "$WITH_BRIDGE" == true ]]; then
-      info "Would run: (cd \"${REPO_ROOT}/apps/bridge\" && bun run build:ui)"
+    if [[ "$WITH_RELAY" == true ]]; then
+      info "Would run: (cd \"${REPO_ROOT}/apps/chat-relay\" && bun run build)"
     fi
   else
     if [[ "$INSTALL_MAIN" == true ]]; then
       (cd "$REPO_ROOT" && bun run build)
       ok "Build finished"
     fi
-    if [[ "$WITH_BRIDGE" == true ]]; then
-      (cd "${REPO_ROOT}/apps/bridge" && bun run build:ui)
-      ok "Bridge UI built"
+    if [[ "$WITH_RELAY" == true ]]; then
+      (cd "${REPO_ROOT}/apps/chat-relay" && bun run build)
+      ok "THE RELAY built"
     fi
   fi
 else
@@ -318,8 +297,8 @@ else
   else
     warn "Ensure you already ran: bun install"
   fi
-  if [[ "$WITH_BRIDGE" == true ]]; then
-    warn "And for bridge: (cd apps/bridge && bun run build:ui)"
+  if [[ "$WITH_RELAY" == true ]]; then
+    warn "And for THE RELAY: (cd apps/chat-relay && bun run build)"
   fi
   step 3 "$TOTAL_STEPS" "(skipped)"
 fi
@@ -393,36 +372,31 @@ UNIT
 TMP_UNIT=""
 if [[ "$INSTALL_MAIN" == true ]]; then
   TMP_UNIT="$(mktemp)"
-  trap 'rm -f "$TMP_UNIT" "${TMP_BRIDGE_UNIT:-}"' EXIT
+  trap 'rm -f "$TMP_UNIT" "${TMP_RELAY_UNIT:-}"' EXIT
   render_unit >"$TMP_UNIT"
 else
-  trap 'rm -f "${TMP_BRIDGE_UNIT:-}"' EXIT
+  trap 'rm -f "${TMP_RELAY_UNIT:-}"' EXIT
 fi
 
-# Bridge unit
-BRIDGE_UNIT_PATH=""
-TMP_BRIDGE_UNIT=""
-if [[ "$WITH_BRIDGE" == true ]]; then
+# Relay unit
+RELAY_UNIT_PATH=""
+TMP_RELAY_UNIT=""
+if [[ "$WITH_RELAY" == true ]]; then
   if [[ "$USER_SCOPE" == true ]]; then
-    BRIDGE_UNIT_PATH="${HOME}/.config/systemd/user/${BRIDGE_SERVICE_NAME}.service"
+    RELAY_UNIT_PATH="${HOME}/.config/systemd/user/${RELAY_SERVICE_NAME}.service"
   else
-    BRIDGE_UNIT_PATH="/etc/systemd/system/${BRIDGE_SERVICE_NAME}.service"
+    RELAY_UNIT_PATH="/etc/systemd/system/${RELAY_SERVICE_NAME}.service"
   fi
 
-  render_bridge_unit() {
-    local env_file_line=""
-    if [[ -n "$BRIDGE_ENV_FILE" ]]; then
-      env_file_line="EnvironmentFile=${BRIDGE_ENV_FILE}"
-    fi
-
+  render_relay_unit() {
     if [[ "$USER_SCOPE" == true ]]; then
       local unit_dependencies=""
-      if [[ "$BRIDGE_ONLY" != true ]]; then
+      if [[ "$RELAY_ONLY" != true ]]; then
         unit_dependencies="${SERVICE_NAME}.service"
       fi
       cat <<UNIT
 [Unit]
-Description=T3 Code Bridge — Project Mythos (multi-agent orchestrator)
+Description=THE RELAY — T3 Code Chat Relay (agent-to-agent ping-pong)
 After=network-online.target${unit_dependencies:+ ${unit_dependencies}}
 Wants=network-online.target
 ${unit_dependencies:+Requires=${unit_dependencies}}
@@ -435,10 +409,8 @@ WorkingDirectory=${REPO_ROOT}
 Environment=NODE_ENV=production
 Environment="HOME=${USER_HOME}"
 Environment="PATH=${SERVICE_PATH}"
-Environment="T3_WS_URL=${BRIDGE_T3_WS_URL}"
-Environment="BRIDGE_PORT=${BRIDGE_PORT}"
-${env_file_line:+${env_file_line}
-}ExecStart=${BUN_PATH} run --cwd apps/bridge start
+Environment="RELAY_SERVER_PORT=${RELAY_PORT}"
+ExecStart=${BUN_PATH} run --cwd apps/chat-relay start
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -449,12 +421,12 @@ WantedBy=default.target
 UNIT
     else
       local unit_dependencies=""
-      if [[ "$BRIDGE_ONLY" != true ]]; then
+      if [[ "$RELAY_ONLY" != true ]]; then
         unit_dependencies="${SERVICE_NAME}.service"
       fi
       cat <<UNIT
 [Unit]
-Description=T3 Code Bridge — Project Mythos (multi-agent orchestrator)
+Description=THE RELAY — T3 Code Chat Relay (agent-to-agent ping-pong)
 After=network-online.target${unit_dependencies:+ ${unit_dependencies}}
 Wants=network-online.target
 ${unit_dependencies:+Requires=${unit_dependencies}}
@@ -469,10 +441,8 @@ WorkingDirectory=${REPO_ROOT}
 Environment=NODE_ENV=production
 Environment="HOME=${USER_HOME}"
 Environment="PATH=${SERVICE_PATH}"
-Environment="T3_WS_URL=${BRIDGE_T3_WS_URL}"
-Environment="BRIDGE_PORT=${BRIDGE_PORT}"
-${env_file_line:+${env_file_line}
-}ExecStart=${BUN_PATH} run --cwd apps/bridge start
+Environment="RELAY_SERVER_PORT=${RELAY_PORT}"
+ExecStart=${BUN_PATH} run --cwd apps/chat-relay start
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -484,8 +454,8 @@ UNIT
     fi
   }
 
-  TMP_BRIDGE_UNIT="$(mktemp)"
-  render_bridge_unit >"$TMP_BRIDGE_UNIT"
+  TMP_RELAY_UNIT="$(mktemp)"
+  render_relay_unit >"$TMP_RELAY_UNIT"
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -495,18 +465,18 @@ if [[ "$DRY_RUN" == true ]]; then
     sed 's/^/  /' "$TMP_UNIT"
     echo -e "${DIM}--- end ---${RESET}"
   fi
-  if [[ "$WITH_BRIDGE" == true ]]; then
+  if [[ "$WITH_RELAY" == true ]]; then
     echo ""
-    echo -e "${DIM}--- ${BRIDGE_SERVICE_NAME}.service (preview) ---${RESET}"
-    sed 's/^/  /' "$TMP_BRIDGE_UNIT"
+    echo -e "${DIM}--- ${RELAY_SERVICE_NAME}.service (preview) ---${RESET}"
+    sed 's/^/  /' "$TMP_RELAY_UNIT"
     echo -e "${DIM}--- end ---${RESET}"
   fi
 else
   if [[ "$INSTALL_MAIN" == true ]]; then
     ok "Unit file prepared (${UNIT_PATH})"
   fi
-  if [[ "$WITH_BRIDGE" == true ]]; then
-    ok "Bridge unit file prepared (${BRIDGE_UNIT_PATH})"
+  if [[ "$WITH_RELAY" == true ]]; then
+    ok "Relay unit file prepared (${RELAY_UNIT_PATH})"
   fi
 fi
 
@@ -520,29 +490,29 @@ if [[ "$DRY_RUN" == true ]]; then
     else
       info "Would: mkdir -p ~/.config/systemd/user"
     fi
-    if [[ "$WITH_BRIDGE" == true ]]; then
-      info "Would: cp bridge unit → ${BRIDGE_UNIT_PATH}"
+    if [[ "$WITH_RELAY" == true ]]; then
+      info "Would: cp relay unit → ${RELAY_UNIT_PATH}"
     fi
     info "Would: systemctl --user daemon-reload"
     if [[ "$INSTALL_MAIN" == true ]]; then
       info "Would: systemctl --user enable --now ${SERVICE_NAME}.service"
     fi
-    if [[ "$WITH_BRIDGE" == true ]]; then
-      info "Would: systemctl --user enable --now ${BRIDGE_SERVICE_NAME}.service"
+    if [[ "$WITH_RELAY" == true ]]; then
+      info "Would: systemctl --user enable --now ${RELAY_SERVICE_NAME}.service"
     fi
   else
     if [[ "$INSTALL_MAIN" == true ]]; then
       info "Would: sudo cp → ${UNIT_PATH}"
     fi
-    if [[ "$WITH_BRIDGE" == true ]]; then
-      info "Would: sudo cp → ${BRIDGE_UNIT_PATH}"
+    if [[ "$WITH_RELAY" == true ]]; then
+      info "Would: sudo cp → ${RELAY_UNIT_PATH}"
     fi
     info "Would: sudo systemctl daemon-reload"
     if [[ "$INSTALL_MAIN" == true ]]; then
       info "Would: sudo systemctl enable --now ${SERVICE_NAME}.service"
     fi
-    if [[ "$WITH_BRIDGE" == true ]]; then
-      info "Would: sudo systemctl enable --now ${BRIDGE_SERVICE_NAME}.service"
+    if [[ "$WITH_RELAY" == true ]]; then
+      info "Would: sudo systemctl enable --now ${RELAY_SERVICE_NAME}.service"
     fi
   fi
   echo ""
@@ -559,15 +529,11 @@ if [[ "$INSTALL_MAIN" == true ]]; then
   echo -e "  ${DIM}Port${RESET}     ${PORT}"
   echo -e "  ${DIM}Unit${RESET}     ${UNIT_PATH}"
 fi
-if [[ "$WITH_BRIDGE" == true ]]; then
+if [[ "$WITH_RELAY" == true ]]; then
   echo ""
-  echo -e "  ${DIM}Bridge${RESET}"
-  echo -e "  ${DIM}  UI${RESET}     http://0.0.0.0:${BRIDGE_PORT}"
-  echo -e "  ${DIM}  T3 WS${RESET}  ${BRIDGE_T3_WS_URL}"
-  echo -e "  ${DIM}  Unit${RESET}   ${BRIDGE_UNIT_PATH}"
-  if [[ -n "$BRIDGE_ENV_FILE" ]]; then
-    echo -e "  ${DIM}  Env${RESET}    ${BRIDGE_ENV_FILE}"
-  fi
+  echo -e "  ${DIM}THE RELAY${RESET}"
+  echo -e "  ${DIM}  Port${RESET}   ${RELAY_PORT}"
+  echo -e "  ${DIM}  Unit${RESET}   ${RELAY_UNIT_PATH}"
 fi
 echo ""
 
@@ -579,10 +545,10 @@ SERVICES_LABEL=""
 if [[ "$INSTALL_MAIN" == true ]]; then
   SERVICES_LABEL="${SERVICE_NAME}.service"
 fi
-if [[ "$WITH_BRIDGE" == true && "$INSTALL_MAIN" == true ]]; then
-  SERVICES_LABEL="${SERVICE_NAME}.service + ${BRIDGE_SERVICE_NAME}.service"
-elif [[ "$WITH_BRIDGE" == true ]]; then
-  SERVICES_LABEL="${BRIDGE_SERVICE_NAME}.service"
+if [[ "$WITH_RELAY" == true && "$INSTALL_MAIN" == true ]]; then
+  SERVICES_LABEL="${SERVICE_NAME}.service + ${RELAY_SERVICE_NAME}.service"
+elif [[ "$WITH_RELAY" == true ]]; then
+  SERVICES_LABEL="${RELAY_SERVICE_NAME}.service"
 fi
 
 if ! confirm "Install and start ${SERVICES_LABEL} now?"; then
@@ -595,44 +561,44 @@ if [[ "$USER_SCOPE" == true ]]; then
   if [[ "$INSTALL_MAIN" == true ]]; then
     cp "$TMP_UNIT" "$UNIT_PATH"
   fi
-  if [[ "$WITH_BRIDGE" == true ]]; then
-    cp "$TMP_BRIDGE_UNIT" "$BRIDGE_UNIT_PATH"
+  if [[ "$WITH_RELAY" == true ]]; then
+    cp "$TMP_RELAY_UNIT" "$RELAY_UNIT_PATH"
   fi
   systemctl --user daemon-reload
   if [[ "$INSTALL_MAIN" == true ]]; then
     systemctl --user enable --now "${SERVICE_NAME}.service"
     ok "User service enabled and started"
   fi
-  if [[ "$WITH_BRIDGE" == true ]]; then
-    systemctl --user enable --now "${BRIDGE_SERVICE_NAME}.service"
-    ok "Bridge user service enabled and started"
+  if [[ "$WITH_RELAY" == true ]]; then
+    systemctl --user enable --now "${RELAY_SERVICE_NAME}.service"
+    ok "THE RELAY user service enabled and started"
   fi
   warn "For start-on-boot without login, run once: ${BOLD}loginctl enable-linger ${USER_NAME}${RESET}"
 else
   if [[ "$INSTALL_MAIN" == true ]]; then
     sudo cp "$TMP_UNIT" "$UNIT_PATH"
   fi
-  if [[ "$WITH_BRIDGE" == true ]]; then
-    sudo cp "$TMP_BRIDGE_UNIT" "$BRIDGE_UNIT_PATH"
+  if [[ "$WITH_RELAY" == true ]]; then
+    sudo cp "$TMP_RELAY_UNIT" "$RELAY_UNIT_PATH"
   fi
   sudo systemctl daemon-reload
   if [[ "$INSTALL_MAIN" == true ]]; then
     sudo systemctl enable --now "${SERVICE_NAME}.service"
     ok "System service enabled and started"
   fi
-  if [[ "$WITH_BRIDGE" == true ]]; then
-    sudo systemctl enable --now "${BRIDGE_SERVICE_NAME}.service"
-    ok "Bridge system service enabled and started"
+  if [[ "$WITH_RELAY" == true ]]; then
+    sudo systemctl enable --now "${RELAY_SERVICE_NAME}.service"
+    ok "THE RELAY system service enabled and started"
   fi
 fi
 
-# ── bridge-specific footer ───────────────────────────────────
-if [[ "$WITH_BRIDGE" == true && "$INSTALL_MAIN" == true ]]; then
-  step 6 "$TOTAL_STEPS" "Bridge service installed"
+# ── relay-specific footer ────────────────────────────────────
+if [[ "$WITH_RELAY" == true && "$INSTALL_MAIN" == true ]]; then
+  step 6 "$TOTAL_STEPS" "THE RELAY installed"
   echo ""
-  echo -e "  ${CYAN}Status:${RESET}  systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) status ${BRIDGE_SERVICE_NAME}.service"
-  echo -e "  ${CYAN}Logs:${RESET}    journalctl $([[ "$USER_SCOPE" == true ]] && echo --user -u "${BRIDGE_SERVICE_NAME}.service" || echo -u "${BRIDGE_SERVICE_NAME}.service") -f"
-  echo -e "  ${CYAN}Stop:${RESET}    systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) stop ${BRIDGE_SERVICE_NAME}.service"
+  echo -e "  ${CYAN}Status:${RESET}  systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) status ${RELAY_SERVICE_NAME}.service"
+  echo -e "  ${CYAN}Logs:${RESET}    journalctl $([[ "$USER_SCOPE" == true ]] && echo --user -u "${RELAY_SERVICE_NAME}.service" || echo -u "${RELAY_SERVICE_NAME}.service") -f"
+  echo -e "  ${CYAN}Stop:${RESET}    systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) stop ${RELAY_SERVICE_NAME}.service"
 fi
 
 # ── footer ────────────────────────────────────────────────────
@@ -646,13 +612,13 @@ if [[ "$INSTALL_MAIN" == true ]]; then
   echo ""
   echo -e "  ${DIM}Open UI: http://127.0.0.1:${PORT}  (or your tailnet IP)${RESET}"
 fi
-if [[ "$WITH_BRIDGE" == true ]]; then
+if [[ "$WITH_RELAY" == true ]]; then
   if [[ "$INSTALL_MAIN" != true ]]; then
-    echo -e "  ${CYAN}Status:${RESET}  systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) status ${BRIDGE_SERVICE_NAME}.service"
-    echo -e "  ${CYAN}Logs:${RESET}    journalctl $([[ "$USER_SCOPE" == true ]] && echo --user -u "${BRIDGE_SERVICE_NAME}.service" || echo -u "${BRIDGE_SERVICE_NAME}.service") -f"
-    echo -e "  ${CYAN}Stop:${RESET}    systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) stop ${BRIDGE_SERVICE_NAME}.service"
+    echo -e "  ${CYAN}Status:${RESET}  systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) status ${RELAY_SERVICE_NAME}.service"
+    echo -e "  ${CYAN}Logs:${RESET}    journalctl $([[ "$USER_SCOPE" == true ]] && echo --user -u "${RELAY_SERVICE_NAME}.service" || echo -u "${RELAY_SERVICE_NAME}.service") -f"
+    echo -e "  ${CYAN}Stop:${RESET}    systemctl $([[ "$USER_SCOPE" == true ]] && echo --user) stop ${RELAY_SERVICE_NAME}.service"
     echo ""
   fi
-  echo -e "  ${DIM}Bridge:  http://127.0.0.1:${BRIDGE_PORT}${RESET}"
+  echo -e "  ${DIM}THE RELAY: http://127.0.0.1:${RELAY_PORT}${RESET}"
 fi
 echo ""
