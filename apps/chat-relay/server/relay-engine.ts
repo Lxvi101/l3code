@@ -27,6 +27,17 @@ interface PendingTurnState {
   pairId: string;
   side: PairSide;
   text: string;
+  /**
+   * Has the T3 turn actually entered "running" state since we dispatched?
+   * We must see this transition before accepting a "completed" state,
+   * otherwise we'd pick up the stale completion from the PREVIOUS turn.
+   */
+  seenRunning: boolean;
+  /**
+   * The turn ID we've confirmed as ours (set when we first see "running").
+   * Used to avoid processing a different turn's completion.
+   */
+  activeTurnId: string | null;
 }
 
 interface ParsedUsageLimit {
@@ -465,7 +476,47 @@ export class RelayEngine {
         }
 
         const turnState = thread.latestTurn.state;
+        const turnId = thread.latestTurn.turnId;
+
+        // ── Gate: we must see the turn enter "running" before accepting
+        // any terminal state. This prevents us from picking up a stale
+        // "completed" left over from the PREVIOUS turn before T3 has
+        // registered our new dispatch.
+        if (!pending.seenRunning) {
+          if (turnState === "running") {
+            pending.seenRunning = true;
+            pending.activeTurnId = turnId;
+          }
+          // Haven't seen our turn start yet — skip this cycle
+          continue;
+        }
+
+        // ── Safety: if the turnId changed since we saw "running",
+        // something unexpected happened. Re-lock onto the new turn.
+        if (pending.activeTurnId && turnId !== pending.activeTurnId) {
+          if (turnState === "running") {
+            pending.activeTurnId = turnId;
+            continue;
+          }
+          // Different turn, not running — might be stale; skip
+          continue;
+        }
+
+        // ── Also verify the session is no longer actively processing.
+        // The turn state may flip to "completed" on the last assistant
+        // message, but tool calls can still be in flight. The session
+        // goes to "ready"/"idle"/"stopped" only when truly done.
+        const sessionBusy =
+          thread.session?.status === "running" ||
+          thread.session?.status === "starting";
+
         if (turnState === "completed") {
+          if (sessionBusy) {
+            // Turn text is done but session still processing (tool calls).
+            // Wait for the session to settle.
+            continue;
+          }
+
           this.pendingTurns.delete(threadId);
           const assistantMsg = this.getLastAssistantMessage(thread);
           if (!assistantMsg) {
@@ -741,10 +792,14 @@ export class RelayEngine {
           continue;
         }
 
+        // Restoring a turn that was already dispatched — check if it's running
+        const isRunning = thread.latestTurn.state === "running";
         this.pendingTurns.set(threadId, {
           pairId: pair.id,
           side: pair.waitingFor,
           text: pair.pendingDispatch.text,
+          seenRunning: isRunning,
+          activeTurnId: isRunning ? thread.latestTurn.turnId : null,
         });
         this.ensurePolling();
         continue;
@@ -759,6 +814,8 @@ export class RelayEngine {
               pairId: pair.id,
               side: pair.waitingFor,
               text: pair.pendingDispatch.text,
+              seenRunning: false,
+              activeTurnId: null,
             },
             thread.session.lastError,
           )
@@ -796,6 +853,8 @@ export class RelayEngine {
         pairId: pair.id,
         side: pending.side,
         text: pending.text,
+        seenRunning: false,  // must see "running" before accepting "completed"
+        activeTurnId: null,
       });
       this.ensurePolling();
       this.broadcastPairUpdate(pair);
@@ -805,29 +864,17 @@ export class RelayEngine {
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (
-        this.pauseForUsageLimit(
-          pair,
-          {
-            pairId: pair.id,
-            side: pending.side,
-            text: pending.text,
-          },
-          msg,
-        )
-      ) {
+      const failState: PendingTurnState = {
+        pairId: pair.id,
+        side: pending.side,
+        text: pending.text,
+        seenRunning: false,
+        activeTurnId: null,
+      };
+      if (this.pauseForUsageLimit(pair, failState, msg)) {
         return;
       }
-
-      this.failPendingTurn(
-        pair,
-        {
-          pairId: pair.id,
-          side: pending.side,
-          text: pending.text,
-        },
-        msg,
-      );
+      this.failPendingTurn(pair, failState, msg);
     }
   }
 
