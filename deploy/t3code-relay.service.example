@@ -21,13 +21,13 @@ StartLimitBurst=5
 Type=simple
 User=levi
 Group=levi
-WorkingDirectory=/home/levi/t3code/t3code
+WorkingDirectory=/home/levi/t3code/t3code/apps/chat-relay
 
 Environment=NODE_ENV=production
 Environment="HOME=/home/levi"
 Environment="PATH=/home/levi/.local/bin:/home/levi/.nvm/versions/node/v22.22.1/bin:/home/levi/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="RELAY_SERVER_PORT=4400"
-ExecStart=/home/levi/.bun/bin/bun run --cwd apps/chat-relay start
+ExecStart=/home/levi/.bun/bin/bun run start
 
 Restart=always
 RestartSec=5

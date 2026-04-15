@@ -405,12 +405,12 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=${REPO_ROOT}
+WorkingDirectory=${REPO_ROOT}/apps/chat-relay
 Environment=NODE_ENV=production
 Environment="HOME=${USER_HOME}"
 Environment="PATH=${SERVICE_PATH}"
 Environment="RELAY_SERVER_PORT=${RELAY_PORT}"
-ExecStart=${BUN_PATH} run --cwd apps/chat-relay start
+ExecStart=${BUN_PATH} run start
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -437,12 +437,12 @@ StartLimitBurst=5
 Type=simple
 User=${USER_NAME}
 Group=${GROUP_NAME}
-WorkingDirectory=${REPO_ROOT}
+WorkingDirectory=${REPO_ROOT}/apps/chat-relay
 Environment=NODE_ENV=production
 Environment="HOME=${USER_HOME}"
 Environment="PATH=${SERVICE_PATH}"
 Environment="RELAY_SERVER_PORT=${RELAY_PORT}"
-ExecStart=${BUN_PATH} run --cwd apps/chat-relay start
+ExecStart=${BUN_PATH} run start
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
