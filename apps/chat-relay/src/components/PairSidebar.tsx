@@ -49,9 +49,7 @@ export function PairSidebar({
   onCreateNew,
 }: Props) {
   // Threads NOT belonging to any pair (non-relay threads from T3)
-  const pairThreadIds = new Set(
-    pairs.flatMap((p) => [p.threadA.id, p.threadB.id]),
-  );
+  const pairThreadIds = new Set(pairs.flatMap((p) => [p.threadA.id, p.threadB.id]));
   const standaloneThreads = threads.filter((t) => !pairThreadIds.has(t.id));
 
   return (
@@ -60,9 +58,7 @@ export function PairSidebar({
       <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
         <div className="flex items-center gap-2">
           <ArrowLeftRight className="size-4 text-zinc-400" />
-          <span className="text-sm font-semibold text-zinc-200">
-            Chat Pairs
-          </span>
+          <span className="text-sm font-semibold text-zinc-200">Chat Pairs</span>
           <span className="rounded-full bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-500">
             {pairs.length}
           </span>
@@ -99,9 +95,7 @@ export function PairSidebar({
                     key={pair.id}
                     onClick={() => onSelectPair(pair.id)}
                     className={`w-full rounded-lg px-3 py-2.5 text-left transition ${
-                      isSelected
-                        ? "bg-zinc-800 ring-1 ring-zinc-700"
-                        : "hover:bg-zinc-900"
+                      isSelected ? "bg-zinc-800 ring-1 ring-zinc-700" : "hover:bg-zinc-900"
                     }`}
                   >
                     <div className="flex items-center justify-between">
@@ -118,9 +112,7 @@ export function PairSidebar({
                       <span className="truncate">
                         {pair.threadA.label} / {pair.threadB.label}
                       </span>
-                      <span className="flex-shrink-0 text-zinc-700">
-                        T{pair.turnCount}
-                      </span>
+                      <span className="flex-shrink-0 text-zinc-700">T{pair.turnCount}</span>
                     </div>
                     {pair.messages.length > 0 && (
                       <p className="mt-1 truncate text-xs text-zinc-600">
@@ -139,9 +131,7 @@ export function PairSidebar({
           <>
             <div className="flex items-center gap-2 border-t border-zinc-800 px-4 py-2.5">
               <MessageSquare className="size-3.5 text-zinc-500" />
-              <span className="text-xs font-semibold text-zinc-400">
-                All T3 Threads
-              </span>
+              <span className="text-xs font-semibold text-zinc-400">All T3 Threads</span>
               <span className="rounded-full bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-600">
                 {threads.length}
               </span>
@@ -156,9 +146,7 @@ export function PairSidebar({
                     key={thread.id}
                     onClick={() => onSelectThread(thread.id)}
                     className={`w-full rounded-lg px-3 py-2 text-left transition ${
-                      isSelected
-                        ? "bg-zinc-800 ring-1 ring-zinc-700"
-                        : "hover:bg-zinc-900"
+                      isSelected ? "bg-zinc-800 ring-1 ring-zinc-700" : "hover:bg-zinc-900"
                     }`}
                   >
                     <div className="flex items-center gap-1.5">

@@ -26,19 +26,13 @@ function ModificationEditor({
   };
 
   const updateMod = (index: number, updates: Partial<Modification>) => {
-    onChange(
-      modifications.map((m, i) =>
-        i === index ? { ...m, ...updates } : m,
-      ),
-    );
+    onChange(modifications.map((m, i) => (i === index ? { ...m, ...updates } : m)));
   };
 
   return (
     <div>
       <div className="mb-2 flex items-center justify-between">
-        <label className="block text-xs font-medium text-zinc-400">
-          {label}
-        </label>
+        <label className="block text-xs font-medium text-zinc-400">{label}</label>
         <button
           type="button"
           onClick={addMod}
@@ -56,10 +50,7 @@ function ModificationEditor({
       ) : (
         <div className="space-y-2">
           {modifications.map((mod, i) => (
-            <div
-              key={i}
-              className="flex items-start gap-2 rounded-lg bg-zinc-800/50 p-2"
-            >
+            <div key={i} className="flex items-start gap-2 rounded-lg bg-zinc-800/50 p-2">
               <select
                 value={mod.type}
                 onChange={(e) =>
@@ -80,18 +71,14 @@ function ModificationEditor({
                   <input
                     type="text"
                     value={mod.pattern ?? ""}
-                    onChange={(e) =>
-                      updateMod(i, { pattern: e.target.value })
-                    }
+                    onChange={(e) => updateMod(i, { pattern: e.target.value })}
                     placeholder="Regex pattern..."
                     className="w-full rounded bg-zinc-700 px-2 py-1 text-xs text-zinc-200 placeholder:text-zinc-600"
                   />
                 )}
                 <textarea
                   value={mod.value}
-                  onChange={(e) =>
-                    updateMod(i, { value: e.target.value })
-                  }
+                  onChange={(e) => updateMod(i, { value: e.target.value })}
                   placeholder={
                     mod.type === "wrap"
                       ? "Use {{message}} as placeholder..."
@@ -119,10 +106,7 @@ function ModificationEditor({
   );
 }
 
-const MODELS_BY_PROVIDER: Record<
-  "claudeAgent" | "codex",
-  { id: string; label: string }[]
-> = {
+const MODELS_BY_PROVIDER: Record<"claudeAgent" | "codex", { id: string; label: string }[]> = {
   claudeAgent: [
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
     { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
@@ -186,9 +170,7 @@ export function CreatePairDialog({ projects, onClose, onCreate }: Props) {
         <div className="flex items-center justify-between border-b border-zinc-800 px-6 py-4">
           <div className="flex items-center gap-2">
             <Wand2 className="size-5 text-zinc-400" />
-            <h2 className="text-lg font-semibold text-zinc-100">
-              Create Chat Pair
-            </h2>
+            <h2 className="text-lg font-semibold text-zinc-100">Create Chat Pair</h2>
           </div>
           <button
             onClick={onClose}
@@ -202,9 +184,7 @@ export function CreatePairDialog({ projects, onClose, onCreate }: Props) {
           {/* Basic Info */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
-              <label className="mb-1 block text-xs font-medium text-zinc-400">
-                Pair Name
-              </label>
+              <label className="mb-1 block text-xs font-medium text-zinc-400">Pair Name</label>
               <input
                 type="text"
                 value={name}
@@ -216,9 +196,7 @@ export function CreatePairDialog({ projects, onClose, onCreate }: Props) {
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-zinc-400">
-                Project
-              </label>
+              <label className="mb-1 block text-xs font-medium text-zinc-400">Project</label>
               <select
                 value={projectId}
                 onChange={(e) => setProjectId(e.target.value)}
@@ -233,9 +211,7 @@ export function CreatePairDialog({ projects, onClose, onCreate }: Props) {
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-zinc-400">
-                Runtime Mode
-              </label>
+              <label className="mb-1 block text-xs font-medium text-zinc-400">Runtime Mode</label>
               <select
                 value={runtimeMode}
                 onChange={(e) => setRuntimeMode(e.target.value as PairConfig["runtimeMode"])}
@@ -251,9 +227,7 @@ export function CreatePairDialog({ projects, onClose, onCreate }: Props) {
           {/* Model */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block text-xs font-medium text-zinc-400">
-                Provider
-              </label>
+              <label className="mb-1 block text-xs font-medium text-zinc-400">Provider</label>
               <select
                 value={provider}
                 onChange={(e) => {
@@ -268,9 +242,7 @@ export function CreatePairDialog({ projects, onClose, onCreate }: Props) {
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-zinc-400">
-                Model
-              </label>
+              <label className="mb-1 block text-xs font-medium text-zinc-400">Model</label>
               <select
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
@@ -353,9 +325,7 @@ export function CreatePairDialog({ projects, onClose, onCreate }: Props) {
               <input
                 type="number"
                 value={maxTurns}
-                onChange={(e) =>
-                  setMaxTurns(Math.max(0, parseInt(e.target.value) || 0))
-                }
+                onChange={(e) => setMaxTurns(Math.max(0, parseInt(e.target.value) || 0))}
                 min={0}
                 className="w-full rounded-lg bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-600"
               />

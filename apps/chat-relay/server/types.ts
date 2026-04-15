@@ -42,13 +42,7 @@ export interface ThreadInfo {
   label: string;
 }
 
-export type PairStatus =
-  | "idle"
-  | "running"
-  | "paused"
-  | "completed"
-  | "stopped"
-  | "error";
+export type PairStatus = "idle" | "running" | "paused" | "completed" | "stopped" | "error";
 
 export interface RelayMessage {
   id: string;
@@ -63,6 +57,16 @@ export interface RelayMessage {
   turnNumber: number;
 }
 
+export interface PendingDispatch {
+  side: "A" | "B";
+  threadId: string;
+  text: string;
+  reason: "initial" | "relay";
+  sourceSide: "A" | "B" | null;
+  dispatchedAt: string | null;
+  retryCount: number;
+}
+
 export interface ChatPair {
   id: string;
   name: string;
@@ -74,6 +78,8 @@ export interface ChatPair {
   turnCount: number;
   /** Which thread we're currently waiting on */
   waitingFor: "A" | "B" | null;
+  pendingDispatch: PendingDispatch | null;
+  resumeAt: string | null;
   error?: string;
   createdAt: string;
 }
@@ -153,14 +159,7 @@ export interface T3LatestTurn {
 
 export interface T3Session {
   threadId: string;
-  status:
-    | "idle"
-    | "starting"
-    | "running"
-    | "ready"
-    | "interrupted"
-    | "stopped"
-    | "error";
+  status: "idle" | "starting" | "running" | "ready" | "interrupted" | "stopped" | "error";
   providerName: string;
   lastError: string | null;
 }

@@ -40,10 +40,7 @@ const engine = new RelayEngine(broadcast);
 
 // ─── Client Message Handler ───
 
-async function handleClientMessage(
-  msg: ClientMessage,
-  ws: ServerWebSocket<WsData>,
-): Promise<void> {
+async function handleClientMessage(msg: ClientMessage, ws: ServerWebSocket<WsData>): Promise<void> {
   try {
     switch (msg.type) {
       case "connect-t3": {
@@ -161,9 +158,7 @@ const server = Bun.serve<WsData>({
 
     message(ws, message) {
       try {
-        const raw = typeof message === "string"
-          ? message
-          : Buffer.from(message).toString("utf-8");
+        const raw = typeof message === "string" ? message : Buffer.from(message).toString("utf-8");
         const msg: ClientMessage = JSON.parse(raw);
         handleClientMessage(msg, ws);
       } catch (err) {

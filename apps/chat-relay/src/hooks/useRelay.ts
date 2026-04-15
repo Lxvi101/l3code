@@ -67,9 +67,7 @@ export function useRelay(): RelayState & RelayActions {
           break;
 
         case "pair-updated":
-          setPairs((prev) =>
-            prev.map((p) => (p.id === msg.pair.id ? msg.pair : p)),
-          );
+          setPairs((prev) => prev.map((p) => (p.id === msg.pair.id ? msg.pair : p)));
           break;
 
         case "pair-removed":
@@ -79,9 +77,7 @@ export function useRelay(): RelayState & RelayActions {
         case "new-message":
           setPairs((prev) =>
             prev.map((p) =>
-              p.id === msg.pairId
-                ? { ...p, messages: [...p.messages, msg.message] }
-                : p,
+              p.id === msg.pairId ? { ...p, messages: [...p.messages, msg.message] } : p,
             ),
           );
           break;
@@ -142,30 +138,14 @@ export function useRelay(): RelayState & RelayActions {
     error,
 
     connectToT3: useCallback(
-      (url: string, credential: string) =>
-        send({ type: "connect-t3", url, credential }),
+      (url: string, credential: string) => send({ type: "connect-t3", url, credential }),
       [send],
     ),
-    disconnectFromT3: useCallback(
-      () => send({ type: "disconnect-t3" }),
-      [send],
-    ),
-    createPair: useCallback(
-      (config: PairConfig) => send({ type: "create-pair", config }),
-      [send],
-    ),
-    startPair: useCallback(
-      (pairId: string) => send({ type: "start-pair", pairId }),
-      [send],
-    ),
-    stopPair: useCallback(
-      (pairId: string) => send({ type: "stop-pair", pairId }),
-      [send],
-    ),
-    deletePair: useCallback(
-      (pairId: string) => send({ type: "delete-pair", pairId }),
-      [send],
-    ),
+    disconnectFromT3: useCallback(() => send({ type: "disconnect-t3" }), [send]),
+    createPair: useCallback((config: PairConfig) => send({ type: "create-pair", config }), [send]),
+    startPair: useCallback((pairId: string) => send({ type: "start-pair", pairId }), [send]),
+    stopPair: useCallback((pairId: string) => send({ type: "stop-pair", pairId }), [send]),
+    deletePair: useCallback((pairId: string) => send({ type: "delete-pair", pairId }), [send]),
     clearError: useCallback(() => setError(null), []),
   };
 }

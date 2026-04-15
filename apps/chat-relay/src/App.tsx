@@ -1,12 +1,5 @@
 import { useState } from "react";
-import {
-  Plug,
-  Unplug,
-  ArrowLeftRight,
-  Wifi,
-  WifiOff,
-  Server,
-} from "lucide-react";
+import { Plug, Unplug, ArrowLeftRight, Wifi, WifiOff, Server } from "lucide-react";
 import { useRelay } from "./hooks/useRelay";
 import { PairSidebar } from "./components/PairSidebar";
 import { ChatPairView } from "./components/ChatPairView";
@@ -28,9 +21,7 @@ function ConnectPanel({
       <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-8">
         <div className="mb-6 text-center">
           <Server className="mx-auto size-10 text-zinc-600" />
-          <h1 className="mt-3 text-xl font-bold text-zinc-100">
-            Chat Relay
-          </h1>
+          <h1 className="mt-3 text-xl font-bold text-zinc-100">Chat Relay</h1>
           <p className="mt-1 text-sm text-zinc-500">
             Connect to a running T3 Code server to create chat pairs.
           </p>
@@ -38,9 +29,7 @@ function ConnectPanel({
 
         <div className="space-y-4">
           <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-400">
-              T3 Server URL
-            </label>
+            <label className="mb-1 block text-xs font-medium text-zinc-400">T3 Server URL</label>
             <input
               type="text"
               value={url}
@@ -63,9 +52,7 @@ function ConnectPanel({
             />
             <p className="mt-1 text-xs text-zinc-600">
               Generate with:{" "}
-              <code className="rounded bg-zinc-800 px-1">
-                t3 auth pairing create
-              </code>
+              <code className="rounded bg-zinc-800 px-1">t3 auth pairing create</code>
             </p>
           </div>
 
@@ -82,10 +69,7 @@ function ConnectPanel({
   );
 }
 
-type Selection =
-  | { kind: "pair"; id: string }
-  | { kind: "thread"; id: string }
-  | null;
+type Selection = { kind: "pair"; id: string } | { kind: "thread"; id: string } | null;
 
 export default function App() {
   const relay = useRelay();
@@ -94,14 +78,10 @@ export default function App() {
   const [isConnecting, setIsConnecting] = useState(false);
 
   const selectedPair =
-    selection?.kind === "pair"
-      ? relay.pairs.find((p) => p.id === selection.id)
-      : undefined;
+    selection?.kind === "pair" ? relay.pairs.find((p) => p.id === selection.id) : undefined;
 
   const selectedThread =
-    selection?.kind === "thread"
-      ? relay.threads.find((t) => t.id === selection.id)
-      : undefined;
+    selection?.kind === "thread" ? relay.threads.find((t) => t.id === selection.id) : undefined;
 
   const handleConnect = (url: string, credential: string) => {
     setIsConnecting(true);
@@ -115,9 +95,7 @@ export default function App() {
       <div className="flex h-screen items-center justify-center bg-zinc-950 text-zinc-100">
         <div className="text-center">
           <WifiOff className="mx-auto size-10 text-zinc-700" />
-          <p className="mt-3 text-sm text-zinc-500">
-            Connecting to relay server...
-          </p>
+          <p className="mt-3 text-sm text-zinc-500">Connecting to relay server...</p>
         </div>
       </div>
     );
@@ -130,18 +108,12 @@ export default function App() {
         {relay.error && (
           <div className="border-b border-red-900/50 bg-red-950/30 px-6 py-2 text-center text-sm text-red-400">
             {relay.error}
-            <button
-              onClick={relay.clearError}
-              className="ml-3 underline hover:no-underline"
-            >
+            <button onClick={relay.clearError} className="ml-3 underline hover:no-underline">
               dismiss
             </button>
           </div>
         )}
-        <ConnectPanel
-          onConnect={handleConnect}
-          connecting={isConnecting}
-        />
+        <ConnectPanel onConnect={handleConnect} connecting={isConnecting} />
       </div>
     );
   }
@@ -153,19 +125,14 @@ export default function App() {
       <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
         <div className="flex items-center gap-3">
           <ArrowLeftRight className="size-4 text-zinc-500" />
-          <span className="text-sm font-semibold text-zinc-300">
-            Chat Relay
-          </span>
+          <span className="text-sm font-semibold text-zinc-300">Chat Relay</span>
         </div>
 
         <div className="flex items-center gap-4">
           {relay.error && (
             <span className="text-xs text-red-400">
               {relay.error}
-              <button
-                onClick={relay.clearError}
-                className="ml-2 underline hover:no-underline"
-              >
+              <button onClick={relay.clearError} className="ml-2 underline hover:no-underline">
                 dismiss
               </button>
             </span>

@@ -68,8 +68,16 @@ export function ChatPairView({ pair, onStart, onStop, onDelete }: Props) {
   const status = statusConfig[pair.status];
   const StatusIcon = status.icon;
   const isRunning = pair.status === "running";
-  const canStart = pair.status === "idle" || pair.status === "stopped" || pair.status === "error";
-  const canStop = pair.status === "running";
+  const canStart =
+    pair.status === "idle" ||
+    pair.status === "stopped" ||
+    pair.status === "error" ||
+    pair.status === "paused";
+  const canStop = pair.status === "running" || pair.status === "paused";
+  const resumeAtLabel =
+    pair.resumeAt && Number.isFinite(Date.parse(pair.resumeAt))
+      ? new Date(pair.resumeAt).toLocaleString()
+      : pair.resumeAt;
 
   return (
     <div className="flex h-full flex-col">
@@ -77,9 +85,7 @@ export function ChatPairView({ pair, onStart, onStop, onDelete }: Props) {
       <div className="flex items-center justify-between border-b border-zinc-800 px-6 py-4">
         <div className="flex items-center gap-4">
           <div>
-            <h2 className="text-lg font-semibold text-zinc-100">
-              {pair.name}
-            </h2>
+            <h2 className="text-lg font-semibold text-zinc-100">{pair.name}</h2>
             <div className="mt-0.5 flex items-center gap-3 text-xs text-zinc-500">
               <span className="flex items-center gap-1">
                 <span className="size-2 rounded-full bg-relay-a" />
@@ -91,7 +97,10 @@ export function ChatPairView({ pair, onStart, onStop, onDelete }: Props) {
                 {pair.threadB.label}
               </span>
               <span className="text-zinc-600">|</span>
-              <span>Turn {pair.turnCount}{pair.config.maxTurns > 0 ? ` / ${pair.config.maxTurns}` : ""}</span>
+              <span>
+                Turn {pair.turnCount}
+                {pair.config.maxTurns > 0 ? ` / ${pair.config.maxTurns}` : ""}
+              </span>
             </div>
           </div>
         </div>
@@ -101,14 +110,15 @@ export function ChatPairView({ pair, onStart, onStop, onDelete }: Props) {
           <div
             className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${status.bg} ${status.color}`}
           >
-            <StatusIcon
-              className={`size-3.5 ${isRunning ? "animate-spin" : ""}`}
-            />
+            <StatusIcon className={`size-3.5 ${isRunning ? "animate-spin" : ""}`} />
             {status.label}
             {pair.waitingFor && isRunning && (
               <span className="text-zinc-500">
                 (waiting for {pair.waitingFor === "A" ? pair.threadA.label : pair.threadB.label})
               </span>
+            )}
+            {pair.status === "paused" && resumeAtLabel && (
+              <span className="text-zinc-500">(retry at {resumeAtLabel})</span>
             )}
           </div>
 
@@ -143,7 +153,13 @@ export function ChatPairView({ pair, onStart, onStop, onDelete }: Props) {
 
       {/* Error banner */}
       {pair.error && (
-        <div className="border-b border-red-900/50 bg-red-950/30 px-6 py-2 text-xs text-red-400">
+        <div
+          className={`border-b px-6 py-2 text-xs ${
+            pair.status === "paused"
+              ? "border-amber-900/50 bg-amber-950/30 text-amber-300"
+              : "border-red-900/50 bg-red-950/30 text-red-400"
+          }`}
+        >
           {pair.error}
         </div>
       )}
@@ -174,14 +190,20 @@ export function ChatPairView({ pair, onStart, onStop, onDelete }: Props) {
             {isRunning && (
               <div className="flex items-center gap-2 py-3 text-xs text-zinc-500">
                 <span className="flex gap-1">
-                  <span className="animate-pulse-dot size-1.5 rounded-full bg-zinc-500" style={{ animationDelay: "0ms" }} />
-                  <span className="animate-pulse-dot size-1.5 rounded-full bg-zinc-500" style={{ animationDelay: "300ms" }} />
-                  <span className="animate-pulse-dot size-1.5 rounded-full bg-zinc-500" style={{ animationDelay: "600ms" }} />
+                  <span
+                    className="animate-pulse-dot size-1.5 rounded-full bg-zinc-500"
+                    style={{ animationDelay: "0ms" }}
+                  />
+                  <span
+                    className="animate-pulse-dot size-1.5 rounded-full bg-zinc-500"
+                    style={{ animationDelay: "300ms" }}
+                  />
+                  <span
+                    className="animate-pulse-dot size-1.5 rounded-full bg-zinc-500"
+                    style={{ animationDelay: "600ms" }}
+                  />
                 </span>
-                Waiting for{" "}
-                {pair.waitingFor === "A"
-                  ? pair.threadA.label
-                  : pair.threadB.label}
+                Waiting for {pair.waitingFor === "A" ? pair.threadA.label : pair.threadB.label}
                 ...
               </div>
             )}
@@ -202,17 +224,22 @@ export function ChatPairView({ pair, onStart, onStop, onDelete }: Props) {
           </span>
           {pair.config.stopSignal && (
             <span>
-              Stop: <code className="rounded bg-zinc-800 px-1 text-zinc-400">{pair.config.stopSignal}</code>
+              Stop:{" "}
+              <code className="rounded bg-zinc-800 px-1 text-zinc-400">
+                {pair.config.stopSignal}
+              </code>
             </span>
           )}
           {pair.config.modificationsAtoB.length > 0 && (
             <span>
-              A{"\u2192"}B mods: <span className="text-amber-500/70">{pair.config.modificationsAtoB.length}</span>
+              A{"\u2192"}B mods:{" "}
+              <span className="text-amber-500/70">{pair.config.modificationsAtoB.length}</span>
             </span>
           )}
           {pair.config.modificationsBtoA.length > 0 && (
             <span>
-              B{"\u2192"}A mods: <span className="text-amber-500/70">{pair.config.modificationsBtoA.length}</span>
+              B{"\u2192"}A mods:{" "}
+              <span className="text-amber-500/70">{pair.config.modificationsBtoA.length}</span>
             </span>
           )}
         </div>

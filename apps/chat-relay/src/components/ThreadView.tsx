@@ -12,9 +12,7 @@ export function ThreadView({ thread }: Props) {
       <div className="flex items-center gap-3 border-b border-zinc-800 px-6 py-4">
         <Hash className="size-5 text-zinc-500" />
         <div>
-          <h2 className="text-lg font-semibold text-zinc-100">
-            {thread.title}
-          </h2>
+          <h2 className="text-lg font-semibold text-zinc-100">{thread.title}</h2>
           <div className="mt-0.5 flex items-center gap-3 text-xs text-zinc-500">
             <span>{thread.messageCount} messages</span>
             {thread.pairId && (
@@ -46,16 +44,15 @@ export function ThreadView({ thread }: Props) {
           <div className="flex h-full items-center justify-center">
             <div className="text-center">
               <MessageSquare className="mx-auto size-12 text-zinc-800" />
-              <p className="mt-3 text-sm text-zinc-600">
-                This thread has no messages yet.
-              </p>
+              <p className="mt-3 text-sm text-zinc-600">This thread has no messages yet.</p>
             </div>
           </div>
         ) : (
           <div className="text-center text-sm text-zinc-500">
             <MessageSquare className="mx-auto mb-3 size-10 text-zinc-700" />
             <p>
-              This thread has <strong className="text-zinc-300">{thread.messageCount}</strong> messages.
+              This thread has <strong className="text-zinc-300">{thread.messageCount}</strong>{" "}
+              messages.
             </p>
             {thread.lastMessagePreview && (
               <p className="mx-auto mt-3 max-w-lg rounded-lg bg-zinc-900 p-3 text-left text-xs text-zinc-400">
@@ -78,11 +75,15 @@ export function ThreadView({ thread }: Props) {
             Thread: <code className="rounded bg-zinc-800 px-1 text-zinc-400">{thread.id}</code>
           </span>
           <span>
-            Project: <code className="rounded bg-zinc-800 px-1 text-zinc-400">{thread.projectId}</code>
+            Project:{" "}
+            <code className="rounded bg-zinc-800 px-1 text-zinc-400">{thread.projectId}</code>
           </span>
           {thread.lastActivityAt && (
             <span>
-              Last activity: <span className="text-zinc-400">{new Date(thread.lastActivityAt).toLocaleString()}</span>
+              Last activity:{" "}
+              <span className="text-zinc-400">
+                {new Date(thread.lastActivityAt).toLocaleString()}
+              </span>
             </span>
           )}
         </div>

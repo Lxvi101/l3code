@@ -7,17 +7,11 @@
  */
 
 import { T3Client } from "./t3-client";
-import {
-  loadState,
-  saveState,
-  type PersistedPair,
-  type PersistedState,
-} from "./store";
+import { loadState, saveState, type PersistedPair, type PersistedState } from "./store";
 import type {
   ChatPair,
   Modification,
   PairConfig,
-  PairStatus,
   RelayMessage,
   ServerMessage,
   T3Message,
@@ -27,24 +21,39 @@ import type {
 } from "./types";
 
 type BroadcastFn = (msg: ServerMessage) => void;
+type PairSide = "A" | "B";
+
+interface PendingTurnState {
+  pairId: string;
+  side: PairSide;
+  text: string;
+}
+
+interface ParsedUsageLimit {
+  message: string;
+  resumeAt: string | null;
+}
 
 export class RelayEngine {
   private pairs: Map<string, ChatPair> = new Map();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private resumeTimer: ReturnType<typeof setTimeout> | null = null;
   private t3Client: T3Client | null = null;
   private broadcast: BroadcastFn;
   private cachedProjects: T3Project[] = [];
   private cachedThreads: ThreadSummary[] = [];
+  private tickInFlight = false;
 
   /** Tracks which turn we're waiting on, per thread */
-  private pendingTurns: Map<string, { pairId: string; side: "A" | "B" }> =
-    new Map();
+  private pendingTurns: Map<string, PendingTurnState> = new Map();
 
   private pollDegraded = false;
   private successesSinceLastFailure = 0;
   private static readonly RECOVERY_THRESHOLD = 3;
   private static readonly MAX_CONSECUTIVE_FAILURES = 15;
   private static readonly POLL_INTERVAL_MS = 2_000;
+  private static readonly DEFAULT_USAGE_LIMIT_RETRY_MS = 5 * 60 * 1000;
+  private static readonly MAX_TIMER_DELAY_MS = 2_147_483_647;
 
   constructor(broadcast: BroadcastFn) {
     this.broadcast = broadcast;
@@ -59,16 +68,13 @@ export class RelayEngine {
       return;
     }
 
-    console.log(
-      `[relay] Restoring saved connection to ${state.connection.url}...`,
-    );
+    console.log(`[relay] Restoring saved connection to ${state.connection.url}...`);
 
     try {
       const client = new T3Client(state.connection.url);
       await client.restoreToken(state.connection.bearerToken);
       this.t3Client = client;
 
-      // Fetch snapshot and hydrate
       const snapshot = await client.getSnapshot();
       this.cachedProjects = snapshot.projects.map((p) => ({
         id: p.id,
@@ -76,9 +82,9 @@ export class RelayEngine {
         workspaceRoot: p.workspaceRoot,
       }));
 
-      // Restore pairs from persisted state, hydrating messages from T3
       this.hydrateFromPersisted(state.pairs, snapshot.threads);
       this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
+      await this.restoreRuntimeState(snapshot.threads);
 
       this.broadcast({
         type: "connection-status",
@@ -93,7 +99,6 @@ export class RelayEngine {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[relay] Could not restore saved session: ${msg}`);
-      // Clear the bad saved connection
       this.persist();
     }
   }
@@ -120,14 +125,13 @@ export class RelayEngine {
       workspaceRoot: p.workspaceRoot,
     }));
 
-    // If we already have persisted pairs for this server, hydrate them
     const state = loadState();
     if (state.pairs.length > 0) {
       this.hydrateFromPersisted(state.pairs, snapshot.threads);
     }
 
     this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
-
+    await this.restoreRuntimeState(snapshot.threads);
     this.persist();
 
     this.broadcast({
@@ -142,18 +146,28 @@ export class RelayEngine {
     );
   }
 
-  disconnectFromT3(): void {
-    for (const [id, pair] of this.pairs) {
-      if (pair.status === "running") {
-        this.updatePairStatus(id, "stopped");
+  disconnectFromT3(options?: { preserveRuntime?: boolean }): void {
+    if (!options?.preserveRuntime) {
+      for (const pair of this.pairs.values()) {
+        if (pair.status === "running") {
+          pair.status = "stopped";
+          pair.waitingFor = null;
+          pair.pendingDispatch = null;
+          pair.resumeAt = null;
+          delete pair.error;
+          this.broadcastPairUpdate(pair);
+        }
       }
     }
+
+    this.pendingTurns.clear();
     this.stopPolling();
+    this.stopResumeTimer();
     this.t3Client?.disconnect();
     this.t3Client = null;
     this.cachedThreads = [];
+    this.tickInFlight = false;
 
-    // Clear persisted connection but keep pairs
     this.persist();
 
     this.broadcast({
@@ -198,6 +212,8 @@ export class RelayEngine {
       messages: [],
       turnCount: 0,
       waitingFor: null,
+      pendingDispatch: null,
+      resumeAt: null,
       createdAt: new Date().toISOString(),
     };
 
@@ -205,9 +221,7 @@ export class RelayEngine {
     this.persist();
     this.broadcast({ type: "pair-created", pair });
 
-    console.log(
-      `[relay] Created pair "${config.name}" (${pairId}): ${threadAId} <-> ${threadBId}`,
-    );
+    console.log(`[relay] Created pair "${config.name}" (${pairId}): ${threadAId} <-> ${threadBId}`);
     return pair;
   }
 
@@ -217,38 +231,36 @@ export class RelayEngine {
     if (!this.t3Client) throw new Error("Not connected to T3");
     if (pair.status === "running") return;
 
-    this.updatePairStatus(pairId, "running");
-    pair.waitingFor = "A";
+    if (!pair.pendingDispatch) {
+      const initialMsg: RelayMessage = {
+        id: crypto.randomUUID(),
+        source: "system",
+        role: "user",
+        originalText: pair.config.initialMessage,
+        timestamp: new Date().toISOString(),
+        turnNumber: pair.turnCount,
+      };
+      pair.messages.push(initialMsg);
+      this.broadcast({ type: "new-message", pairId, message: initialMsg });
 
-    const initialMsg: RelayMessage = {
-      id: crypto.randomUUID(),
-      source: "system",
-      role: "user",
-      originalText: pair.config.initialMessage,
-      timestamp: new Date().toISOString(),
-      turnNumber: 0,
-    };
-    pair.messages.push(initialMsg);
-    this.broadcast({ type: "new-message", pairId, message: initialMsg });
-
-    try {
-      await this.t3Client.startTurn({
+      pair.pendingDispatch = {
+        side: "A",
         threadId: pair.threadA.id,
         text: pair.config.initialMessage,
-        runtimeMode: pair.config.runtimeMode,
-        modelSelection: pair.config.modelSelection,
-      });
-
-      this.pendingTurns.set(pair.threadA.id, { pairId, side: "A" });
-      this.ensurePolling();
-
-      console.log(
-        `[relay] Started pair "${pair.name}" — initial message sent to Thread A`,
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.updatePairStatus(pairId, "error", msg);
+        reason: "initial",
+        sourceSide: null,
+        dispatchedAt: null,
+        retryCount: 0,
+      };
     }
+
+    pair.status = "running";
+    pair.waitingFor = pair.pendingDispatch.side;
+    pair.resumeAt = null;
+    delete pair.error;
+    this.broadcastPairUpdate(pair);
+
+    await this.dispatchPendingTurn(pair);
   }
 
   async stopPair(pairId: string): Promise<void> {
@@ -256,17 +268,22 @@ export class RelayEngine {
     if (!pair) return;
 
     if (pair.waitingFor && this.t3Client) {
-      const threadId =
-        pair.waitingFor === "A" ? pair.threadA.id : pair.threadB.id;
+      const threadId = pair.waitingFor === "A" ? pair.threadA.id : pair.threadB.id;
       try {
         await this.t3Client.interruptTurn(threadId);
-      } catch { /* best-effort */ }
+      } catch {
+        // best-effort
+      }
     }
 
     this.pendingTurns.delete(pair.threadA.id);
     this.pendingTurns.delete(pair.threadB.id);
-    this.updatePairStatus(pairId, "stopped");
+    pair.status = "stopped";
     pair.waitingFor = null;
+    pair.pendingDispatch = null;
+    pair.resumeAt = null;
+    delete pair.error;
+    this.broadcastPairUpdate(pair);
 
     const stopMsg: RelayMessage = {
       id: crypto.randomUUID(),
@@ -280,6 +297,7 @@ export class RelayEngine {
     this.broadcast({ type: "new-message", pairId, message: stopMsg });
 
     if (this.pendingTurns.size === 0) this.stopPolling();
+    this.scheduleNextResumeCheck();
     console.log(`[relay] Stopped pair "${pair.name}"`);
   }
 
@@ -288,8 +306,16 @@ export class RelayEngine {
 
     const pair = this.pairs.get(pairId);
     if (pair && this.t3Client) {
-      try { await this.t3Client.deleteThread(pair.threadA.id); } catch { /* */ }
-      try { await this.t3Client.deleteThread(pair.threadB.id); } catch { /* */ }
+      try {
+        await this.t3Client.deleteThread(pair.threadA.id);
+      } catch {
+        // best-effort
+      }
+      try {
+        await this.t3Client.deleteThread(pair.threadB.id);
+      } catch {
+        // best-effort
+      }
     }
 
     this.pairs.delete(pairId);
@@ -310,15 +336,10 @@ export class RelayEngine {
 
   private ensurePolling(): void {
     if (this.pollTimer) return;
-    this.pollTimer = setInterval(
-      () => this.tick(),
-      RelayEngine.POLL_INTERVAL_MS,
-    );
+    this.pollTimer = setInterval(() => void this.tick(), RelayEngine.POLL_INTERVAL_MS);
     this.pollDegraded = false;
     this.successesSinceLastFailure = 0;
-    console.log(
-      `[relay] Started polling T3 snapshot every ${RelayEngine.POLL_INTERVAL_MS}ms`,
-    );
+    console.log(`[relay] Started polling T3 snapshot every ${RelayEngine.POLL_INTERVAL_MS}ms`);
   }
 
   private stopPolling(): void {
@@ -330,102 +351,117 @@ export class RelayEngine {
   }
 
   private async tick(): Promise<void> {
-    if (!this.t3Client || this.pendingTurns.size === 0) return;
+    if (this.tickInFlight || !this.t3Client || this.pendingTurns.size === 0) return;
+    this.tickInFlight = true;
 
-    let snapshot;
     try {
-      snapshot = await this.t3Client.getSnapshot();
-    } catch (err) {
-      const failures = this.t3Client.consecutiveFailures;
-      this.successesSinceLastFailure = 0;
-
-      if (!this.pollDegraded) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[relay] T3 poll failed (will retry): ${msg}`);
-        this.pollDegraded = true;
-      }
-
-      if (failures >= RelayEngine.MAX_CONSECUTIVE_FAILURES) {
-        console.error(
-          `[relay] ${failures} consecutive poll failures — disconnecting`,
-        );
-        this.broadcast({
-          type: "error",
-          message: "Lost connection to T3 server. Please reconnect.",
-        });
-        this.disconnectFromT3();
-      }
-      return;
-    }
-
-    if (this.pollDegraded) {
-      this.successesSinceLastFailure++;
-      if (this.successesSinceLastFailure >= RelayEngine.RECOVERY_THRESHOLD) {
-        console.log("[relay] T3 connection stable again");
-        this.pollDegraded = false;
+      let snapshot;
+      try {
+        snapshot = await this.t3Client.getSnapshot();
+      } catch (err) {
+        const failures = this.t3Client.consecutiveFailures;
         this.successesSinceLastFailure = 0;
-      }
-    }
 
-    this.cachedProjects = snapshot.projects.map((p) => ({
-      id: p.id,
-      title: p.title,
-      workspaceRoot: p.workspaceRoot,
-    }));
-
-    // Update thread list on every successful poll
-    this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
-
-    for (const [threadId, pending] of Array.from(this.pendingTurns.entries())) {
-      const thread = snapshot.threads.find(
-        (t: T3Thread) => t.id === threadId,
-      );
-      if (!thread?.latestTurn) continue;
-
-      const pair = this.pairs.get(pending.pairId);
-      if (!pair || pair.status !== "running") {
-        this.pendingTurns.delete(threadId);
-        continue;
-      }
-
-      const turnState = thread.latestTurn.state;
-
-      if (turnState === "completed") {
-        const assistantMsg = this.getLastAssistantMessage(thread);
-        if (assistantMsg) {
-          await this.handleTurnCompletion(pair, pending.side, assistantMsg, thread);
+        if (!this.pollDegraded) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[relay] T3 poll failed (will retry): ${msg}`);
+          this.pollDegraded = true;
         }
-        this.pendingTurns.delete(threadId);
-      } else if (turnState === "error") {
-        const errorText =
-          thread.session?.lastError ?? "Turn completed with error";
-        this.updatePairStatus(pending.pairId, "error", errorText);
-        this.pendingTurns.delete(threadId);
 
-        const errMsg: RelayMessage = {
-          id: crypto.randomUUID(),
-          source: "system",
-          role: "system",
-          originalText: `Error from ${pending.side === "A" ? pair.threadA.label : pair.threadB.label}: ${errorText}`,
-          timestamp: new Date().toISOString(),
-          turnNumber: pair.turnCount,
-        };
-        pair.messages.push(errMsg);
-        this.broadcast({ type: "new-message", pairId: pending.pairId, message: errMsg });
+        if (failures >= RelayEngine.MAX_CONSECUTIVE_FAILURES) {
+          console.error(`[relay] ${failures} consecutive poll failures — disconnecting`);
+          this.broadcast({
+            type: "error",
+            message:
+              "Lost connection to T3 server. Relay state was preserved and will resume after reconnect.",
+          });
+          this.disconnectFromT3({ preserveRuntime: true });
+        }
+        return;
+      }
+
+      if (this.pollDegraded) {
+        this.successesSinceLastFailure++;
+        if (this.successesSinceLastFailure >= RelayEngine.RECOVERY_THRESHOLD) {
+          console.log("[relay] T3 connection stable again");
+          this.pollDegraded = false;
+          this.successesSinceLastFailure = 0;
+        }
+      }
+
+      this.cachedProjects = snapshot.projects.map((p) => ({
+        id: p.id,
+        title: p.title,
+        workspaceRoot: p.workspaceRoot,
+      }));
+      this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
+
+      for (const [threadId, pending] of Array.from(this.pendingTurns.entries())) {
+        const thread = snapshot.threads.find((entry: T3Thread) => entry.id === threadId);
+
+        const pair = this.pairs.get(pending.pairId);
+        if (!pair || pair.status !== "running") {
+          this.pendingTurns.delete(threadId);
+          continue;
+        }
+
+        if (!thread?.latestTurn) {
+          continue;
+        }
+
+        const turnState = thread.latestTurn.state;
+        if (turnState === "completed") {
+          this.pendingTurns.delete(threadId);
+          const assistantMsg = this.getLastAssistantMessage(thread);
+          if (!assistantMsg) {
+            this.failPendingTurn(
+              pair,
+              pending,
+              `No assistant message was found for completed turn on ${this.labelForSide(pair, pending.side)}.`,
+            );
+            continue;
+          }
+          await this.handleTurnCompletion(pair, pending.side, assistantMsg);
+          continue;
+        }
+
+        if (turnState === "error") {
+          this.pendingTurns.delete(threadId);
+          const errorText = thread.session?.lastError ?? "Turn completed with error";
+
+          if (this.pauseForUsageLimit(pair, pending, errorText)) {
+            continue;
+          }
+
+          this.failPendingTurn(pair, pending, errorText);
+          continue;
+        }
+
+        if (turnState === "interrupted") {
+          this.pendingTurns.delete(threadId);
+          this.failPendingTurn(pair, pending, "Turn was interrupted.");
+        }
+      }
+    } finally {
+      this.tickInFlight = false;
+      if (this.pendingTurns.size === 0) {
+        this.stopPolling();
       }
     }
-
-    if (this.pendingTurns.size === 0) this.stopPolling();
   }
 
   private async handleTurnCompletion(
     pair: ChatPair,
-    side: "A" | "B",
+    side: PairSide,
     assistantMsg: T3Message,
-    _thread: T3Thread,
   ): Promise<void> {
-    const responseText = assistantMsg.text;
+    pair.pendingDispatch = null;
+    pair.waitingFor = null;
+    pair.resumeAt = null;
+    delete pair.error;
+    this.broadcastPairUpdate(pair);
 
+    const responseText = assistantMsg.text;
     const responseMessage: RelayMessage = {
       id: crypto.randomUUID(),
       source: side,
@@ -437,7 +473,6 @@ export class RelayEngine {
     pair.messages.push(responseMessage);
     this.broadcast({ type: "new-message", pairId: pair.id, message: responseMessage });
 
-    // Check stop signal
     if (pair.config.stopSignal) {
       try {
         const stopRegex = new RegExp(pair.config.stopSignal, "i");
@@ -446,20 +481,24 @@ export class RelayEngine {
             id: crypto.randomUUID(),
             source: "system",
             role: "system",
-            originalText: `Stop signal detected in ${side === "A" ? pair.threadA.label : pair.threadB.label}'s response. Relay complete.`,
+            originalText: `Stop signal detected in ${this.labelForSide(pair, side)}'s response. Relay complete.`,
             timestamp: new Date().toISOString(),
             turnNumber: pair.turnCount,
           };
           pair.messages.push(stopMsg);
           this.broadcast({ type: "new-message", pairId: pair.id, message: stopMsg });
-          this.updatePairStatus(pair.id, "completed");
-          pair.waitingFor = null;
+          pair.status = "completed";
+          this.broadcastPairUpdate(pair);
           return;
         }
-      } catch { /* invalid regex */ }
+      } catch {
+        // invalid regex
+      }
     }
 
-    if (side === "B") pair.turnCount++;
+    if (side === "B") {
+      pair.turnCount++;
+    }
 
     if (pair.config.maxTurns > 0 && pair.turnCount >= pair.config.maxTurns) {
       const maxMsg: RelayMessage = {
@@ -472,20 +511,18 @@ export class RelayEngine {
       };
       pair.messages.push(maxMsg);
       this.broadcast({ type: "new-message", pairId: pair.id, message: maxMsg });
-      this.updatePairStatus(pair.id, "completed");
-      pair.waitingFor = null;
+      pair.status = "completed";
+      this.broadcastPairUpdate(pair);
       return;
     }
 
-    const nextSide: "A" | "B" = side === "A" ? "B" : "A";
+    const nextSide: PairSide = side === "A" ? "B" : "A";
     const nextThreadId = nextSide === "A" ? pair.threadA.id : pair.threadB.id;
     const modifications =
       side === "A" ? pair.config.modificationsAtoB : pair.config.modificationsBtoA;
 
     const modifiedText = applyModifications(responseText, modifications);
-    const wasModified = modifiedText !== responseText;
-
-    if (wasModified) {
+    if (modifiedText !== responseText) {
       const relayedMessage: RelayMessage = {
         id: crypto.randomUUID(),
         source: side,
@@ -499,81 +536,74 @@ export class RelayEngine {
       this.broadcast({ type: "new-message", pairId: pair.id, message: relayedMessage });
     }
 
-    try {
-      await this.t3Client!.startTurn({
-        threadId: nextThreadId,
-        text: modifiedText,
-        runtimeMode: pair.config.runtimeMode,
-        modelSelection: pair.config.modelSelection,
-      });
+    pair.pendingDispatch = {
+      side: nextSide,
+      threadId: nextThreadId,
+      text: modifiedText,
+      reason: "relay",
+      sourceSide: side,
+      dispatchedAt: null,
+      retryCount: 0,
+    };
+    pair.status = "running";
+    pair.waitingFor = nextSide;
+    delete pair.error;
+    this.broadcastPairUpdate(pair);
 
-      pair.waitingFor = nextSide;
-      this.pendingTurns.set(nextThreadId, { pairId: pair.id, side: nextSide });
-      this.ensurePolling();
-      this.broadcast({ type: "pair-updated", pair });
-
-      console.log(
-        `[relay] Relayed ${side} -> ${nextSide} for pair "${pair.name}" (turn ${pair.turnCount})`,
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.updatePairStatus(pair.id, "error", msg);
-    }
+    await this.dispatchPendingTurn(pair);
   }
 
   // ─── Hydration: rebuild pair messages from T3 thread history ───
 
-  private hydrateFromPersisted(
-    persisted: PersistedPair[],
-    threads: T3Thread[],
-  ): void {
+  private hydrateFromPersisted(persisted: PersistedPair[], threads: T3Thread[]): void {
     for (const pp of persisted) {
-      // Skip if we already have this pair loaded (e.g. from a previous boot)
       if (this.pairs.has(pp.id)) continue;
 
       const threadA = threads.find((t) => t.id === pp.threadAId);
       const threadB = threads.find((t) => t.id === pp.threadBId);
 
-      // Rebuild messages from both threads
       const messages: RelayMessage[] = [];
-      let turnNumber = 0;
+      let inferredTurnCount = 0;
 
       if (threadA && threadB) {
-        // Interleave messages chronologically from both threads
-        const allT3Msgs: { msg: T3Message; side: "A" | "B" }[] = [
-          ...threadA.messages.map((m) => ({ msg: m, side: "A" as const })),
-          ...threadB.messages.map((m) => ({ msg: m, side: "B" as const })),
-        ].sort(
-          (a, b) =>
-            new Date(a.msg.createdAt).getTime() -
-            new Date(b.msg.createdAt).getTime(),
-        );
+        const allT3Msgs: { msg: T3Message; side: PairSide }[] = [
+          ...threadA.messages.map((msg) => ({ msg, side: "A" as const })),
+          ...threadB.messages.map((msg) => ({ msg, side: "B" as const })),
+        ].sort((a, b) => new Date(a.msg.createdAt).getTime() - new Date(b.msg.createdAt).getTime());
 
         for (const { msg, side } of allT3Msgs) {
-          if (msg.streaming) continue; // skip incomplete streaming messages
+          if (msg.streaming) continue;
           messages.push({
             id: msg.id,
             source: side,
             role: msg.role,
             originalText: msg.text,
             timestamp: msg.createdAt,
-            turnNumber,
+            turnNumber: inferredTurnCount,
           });
-          // Count round-trips: after B's assistant response
-          if (msg.role === "assistant" && side === "B") turnNumber++;
+          if (msg.role === "assistant" && side === "B") {
+            inferredTurnCount++;
+          }
         }
       }
+
+      const status =
+        pp.pendingDispatch !== null ? pp.status : messages.length > 0 ? "stopped" : "idle";
+      const turnCount = Math.max(pp.turnCount, inferredTurnCount);
 
       const pair: ChatPair = {
         id: pp.id,
         name: pp.name,
-        status: messages.length > 0 ? "stopped" : "idle",
+        status,
         threadA: { id: pp.threadAId, label: pp.threadALabel },
         threadB: { id: pp.threadBId, label: pp.threadBLabel },
         config: pp.config,
         messages,
-        turnCount: turnNumber,
-        waitingFor: null,
+        turnCount,
+        waitingFor: pp.pendingDispatch ? pp.waitingFor : null,
+        pendingDispatch: pp.pendingDispatch,
+        resumeAt: pp.pendingDispatch ? pp.resumeAt : null,
+        ...(pp.error ? { error: pp.error } : {}),
         createdAt: pp.createdAt,
       };
 
@@ -584,27 +614,24 @@ export class RelayEngine {
   // ─── Thread summaries for the UI ───
 
   private buildThreadSummaries(threads: T3Thread[]): ThreadSummary[] {
-    // Build a lookup: threadId -> { pairId, side }
-    const pairLookup = new Map<string, { pairId: string; side: "A" | "B" }>();
+    const pairLookup = new Map<string, { pairId: string; side: PairSide }>();
     for (const pair of this.pairs.values()) {
       pairLookup.set(pair.threadA.id, { pairId: pair.id, side: "A" });
       pairLookup.set(pair.threadB.id, { pairId: pair.id, side: "B" });
     }
 
-    return threads.map((t): ThreadSummary => {
-      const lastMsg = t.messages[t.messages.length - 1];
-      const pairInfo = pairLookup.get(t.id);
+    return threads.map((thread): ThreadSummary => {
+      const lastMsg = thread.messages[thread.messages.length - 1];
+      const pairInfo = pairLookup.get(thread.id);
 
       return {
-        id: t.id,
-        projectId: t.projectId,
-        title: t.title,
-        messageCount: t.messages.length,
-        lastMessagePreview: lastMsg
-          ? lastMsg.text.slice(0, 80)
-          : "",
+        id: thread.id,
+        projectId: thread.projectId,
+        title: thread.title,
+        messageCount: thread.messages.length,
+        lastMessagePreview: lastMsg ? lastMsg.text.slice(0, 80) : "",
         lastActivityAt: lastMsg?.updatedAt ?? "",
-        turnState: t.latestTurn?.state ?? null,
+        turnState: thread.latestTurn?.state ?? null,
         pairId: pairInfo?.pairId ?? null,
         pairSide: pairInfo?.side ?? null,
       };
@@ -615,28 +642,274 @@ export class RelayEngine {
 
   private persist(): void {
     const state: PersistedState = {
-      version: 1,
+      version: 2,
       connection:
         this.t3Client?.connected && this.t3Client.token
           ? { url: this.t3Client.url, bearerToken: this.t3Client.token }
           : null,
       pairs: Array.from(this.pairs.values()).map(
-        (p): PersistedPair => ({
-          id: p.id,
-          name: p.name,
-          threadAId: p.threadA.id,
-          threadALabel: p.threadA.label,
-          threadBId: p.threadB.id,
-          threadBLabel: p.threadB.label,
-          config: p.config,
-          createdAt: p.createdAt,
+        (pair): PersistedPair => ({
+          id: pair.id,
+          name: pair.name,
+          threadAId: pair.threadA.id,
+          threadALabel: pair.threadA.label,
+          threadBId: pair.threadB.id,
+          threadBLabel: pair.threadB.label,
+          config: pair.config,
+          status: pair.status,
+          turnCount: pair.turnCount,
+          waitingFor: pair.waitingFor,
+          pendingDispatch: pair.pendingDispatch,
+          resumeAt: pair.resumeAt,
+          error: pair.error ?? null,
+          createdAt: pair.createdAt,
         }),
       ),
     };
     saveState(state);
   }
 
-  // ─── Helpers ───
+  // ─── Recovery Helpers ───
+
+  private async restoreRuntimeState(threads: T3Thread[]): Promise<void> {
+    for (const pair of this.pairs.values()) {
+      if (!pair.pendingDispatch || !pair.waitingFor) {
+        continue;
+      }
+
+      const threadId = pair.waitingFor === "A" ? pair.threadA.id : pair.threadB.id;
+      const thread = threads.find((entry) => entry.id === threadId);
+
+      if (pair.status === "running") {
+        if (!thread?.latestTurn || pair.pendingDispatch.dispatchedAt === null) {
+          await this.dispatchPendingTurn(pair);
+          continue;
+        }
+
+        this.pendingTurns.set(threadId, {
+          pairId: pair.id,
+          side: pair.waitingFor,
+          text: pair.pendingDispatch.text,
+        });
+        this.ensurePolling();
+        continue;
+      }
+
+      if (pair.status === "paused" || pair.status === "error") {
+        if (
+          thread?.session?.lastError &&
+          this.pauseForUsageLimit(
+            pair,
+            {
+              pairId: pair.id,
+              side: pair.waitingFor,
+              text: pair.pendingDispatch.text,
+            },
+            thread.session.lastError,
+          )
+        ) {
+          continue;
+        }
+      }
+    }
+
+    this.scheduleNextResumeCheck();
+    await this.resumeDuePairs();
+  }
+
+  private async dispatchPendingTurn(pair: ChatPair): Promise<void> {
+    if (!this.t3Client) throw new Error("Not connected to T3");
+    if (!pair.pendingDispatch) throw new Error("No pending dispatch to send");
+
+    const pending = pair.pendingDispatch;
+    pending.dispatchedAt = new Date().toISOString();
+    pair.status = "running";
+    pair.waitingFor = pending.side;
+    pair.resumeAt = null;
+    delete pair.error;
+    this.broadcastPairUpdate(pair);
+
+    try {
+      await this.t3Client.startTurn({
+        threadId: pending.threadId,
+        text: pending.text,
+        runtimeMode: pair.config.runtimeMode,
+        modelSelection: pair.config.modelSelection,
+      });
+
+      this.pendingTurns.set(pending.threadId, {
+        pairId: pair.id,
+        side: pending.side,
+        text: pending.text,
+      });
+      this.ensurePolling();
+      this.broadcastPairUpdate(pair);
+
+      console.log(
+        `[relay] Waiting on ${this.labelForSide(pair, pending.side)} for pair "${pair.name}"`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (
+        this.pauseForUsageLimit(
+          pair,
+          {
+            pairId: pair.id,
+            side: pending.side,
+            text: pending.text,
+          },
+          msg,
+        )
+      ) {
+        return;
+      }
+
+      this.failPendingTurn(
+        pair,
+        {
+          pairId: pair.id,
+          side: pending.side,
+          text: pending.text,
+        },
+        msg,
+      );
+    }
+  }
+
+  private failPendingTurn(pair: ChatPair, pending: PendingTurnState, errorText: string): void {
+    pair.status = "error";
+    pair.waitingFor = pending.side;
+    pair.resumeAt = null;
+    if (pair.pendingDispatch) {
+      pair.pendingDispatch.dispatchedAt = null;
+    }
+    pair.error = errorText;
+    this.broadcastPairUpdate(pair);
+
+    const errMsg: RelayMessage = {
+      id: crypto.randomUUID(),
+      source: "system",
+      role: "system",
+      originalText: `Error from ${this.labelForSide(pair, pending.side)}: ${errorText}`,
+      timestamp: new Date().toISOString(),
+      turnNumber: pair.turnCount,
+    };
+    pair.messages.push(errMsg);
+    this.broadcast({ type: "new-message", pairId: pair.id, message: errMsg });
+  }
+
+  private pauseForUsageLimit(
+    pair: ChatPair,
+    pending: PendingTurnState,
+    errorText: string,
+  ): boolean {
+    const parsed = parseUsageLimit(errorText);
+    if (!parsed) {
+      return false;
+    }
+
+    const existingPending = pair.pendingDispatch ?? {
+      side: pending.side,
+      threadId: pending.side === "A" ? pair.threadA.id : pair.threadB.id,
+      text: pending.text,
+      reason: "relay" as const,
+      sourceSide: null,
+      dispatchedAt: null,
+      retryCount: 0,
+    };
+
+    existingPending.dispatchedAt = null;
+    existingPending.retryCount += 1;
+    pair.pendingDispatch = existingPending;
+    pair.status = "paused";
+    pair.waitingFor = pending.side;
+    pair.resumeAt =
+      parsed.resumeAt ??
+      new Date(Date.now() + RelayEngine.DEFAULT_USAGE_LIMIT_RETRY_MS).toISOString();
+    pair.error = parsed.message;
+    this.broadcastPairUpdate(pair);
+
+    const pauseMsg: RelayMessage = {
+      id: crypto.randomUUID(),
+      source: "system",
+      role: "system",
+      originalText: this.formatUsagePauseMessage(pair, pending.side, pair.resumeAt, parsed.message),
+      timestamp: new Date().toISOString(),
+      turnNumber: pair.turnCount,
+    };
+    pair.messages.push(pauseMsg);
+    this.broadcast({ type: "new-message", pairId: pair.id, message: pauseMsg });
+
+    this.scheduleNextResumeCheck();
+    console.log(
+      `[relay] Usage limit paused pair "${pair.name}" until ${pair.resumeAt ?? "manual retry"}`,
+    );
+    return true;
+  }
+
+  private async resumeDuePairs(): Promise<void> {
+    if (!this.t3Client) return;
+
+    const now = Date.now();
+    const duePairs = Array.from(this.pairs.values()).filter((pair) => {
+      if (pair.status !== "paused") return false;
+      if (!pair.pendingDispatch || !pair.resumeAt) return false;
+      const resumeAtMs = Date.parse(pair.resumeAt);
+      return Number.isFinite(resumeAtMs) && resumeAtMs <= now;
+    });
+
+    for (const pair of duePairs) {
+      const pending = pair.pendingDispatch;
+      if (!pending) continue;
+
+      const resumeMsg: RelayMessage = {
+        id: crypto.randomUUID(),
+        source: "system",
+        role: "system",
+        originalText: `Usage window reached. Retrying ${this.labelForSide(pair, pending.side)}.`,
+        timestamp: new Date().toISOString(),
+        turnNumber: pair.turnCount,
+      };
+      pair.messages.push(resumeMsg);
+      this.broadcast({ type: "new-message", pairId: pair.id, message: resumeMsg });
+
+      pair.status = "running";
+      pair.resumeAt = null;
+      delete pair.error;
+      this.broadcastPairUpdate(pair);
+
+      await this.dispatchPendingTurn(pair);
+    }
+
+    this.scheduleNextResumeCheck();
+  }
+
+  private scheduleNextResumeCheck(): void {
+    this.stopResumeTimer();
+    if (!this.t3Client) return;
+
+    const nextResumeAt = Array.from(this.pairs.values())
+      .filter((pair) => pair.status === "paused" && pair.pendingDispatch && pair.resumeAt)
+      .map((pair) => Date.parse(pair.resumeAt!))
+      .filter((timestamp) => Number.isFinite(timestamp))
+      .sort((a, b) => a - b)[0];
+
+    if (nextResumeAt === undefined) return;
+
+    const delay = Math.max(0, Math.min(nextResumeAt - Date.now(), RelayEngine.MAX_TIMER_DELAY_MS));
+    this.resumeTimer = setTimeout(() => {
+      void this.resumeDuePairs();
+    }, delay);
+  }
+
+  private stopResumeTimer(): void {
+    if (this.resumeTimer) {
+      clearTimeout(this.resumeTimer);
+      this.resumeTimer = null;
+    }
+  }
+
+  // ─── UI / Message Helpers ───
 
   private broadcastFullSnapshot(): void {
     this.broadcast({
@@ -647,10 +920,15 @@ export class RelayEngine {
     });
   }
 
+  private broadcastPairUpdate(pair: ChatPair): void {
+    this.persist();
+    this.broadcast({ type: "pair-updated", pair });
+  }
+
   private getLastAssistantMessage(thread: T3Thread): T3Message | null {
     if (thread.latestTurn?.assistantMessageId) {
       const msg = thread.messages.find(
-        (m) => m.id === thread.latestTurn!.assistantMessageId,
+        (entry) => entry.id === thread.latestTurn!.assistantMessageId,
       );
       if (msg) return msg;
     }
@@ -662,21 +940,222 @@ export class RelayEngine {
     return null;
   }
 
-  private updatePairStatus(pairId: string, status: PairStatus, error?: string): void {
-    const pair = this.pairs.get(pairId);
-    if (!pair) return;
-    pair.status = status;
-    if (error) pair.error = error;
-    this.broadcast({ type: "pair-updated", pair });
+  private labelForSide(pair: ChatPair, side: PairSide): string {
+    return side === "A" ? pair.threadA.label : pair.threadB.label;
   }
+
+  private formatUsagePauseMessage(
+    pair: ChatPair,
+    side: PairSide,
+    resumeAt: string | null,
+    errorText: string,
+  ): string {
+    if (!resumeAt) {
+      return `Usage limit hit for ${this.labelForSide(pair, side)}. Relay paused for retry. ${errorText}`;
+    }
+
+    return `Usage limit hit for ${this.labelForSide(pair, side)}. Relay paused until ${resumeAt}. ${errorText}`;
+  }
+}
+
+// ─── Usage Limit Parsing ───
+
+function parseUsageLimit(message: string): ParsedUsageLimit | null {
+  const normalized = message.trim();
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  const looksLikeUsageLimit =
+    /\b(hit your limit|usage limit|rate limit|quota)\b/i.test(normalized) &&
+    /\breset/i.test(normalized);
+  if (!looksLikeUsageLimit) {
+    return null;
+  }
+
+  const resumeAt = parseResetTimestamp(normalized);
+  return {
+    message: normalized,
+    resumeAt,
+  };
+}
+
+function parseResetTimestamp(message: string): string | null {
+  const match = message.match(/\bresets?\s+([^.!\n]+)/i);
+  if (!match) {
+    return null;
+  }
+
+  const rawReset = match[1].trim().replace(/^at\s+/i, "");
+  const timezoneMatch = rawReset.match(/\(([^)]+)\)\s*$/);
+  const timezone = timezoneMatch?.[1]?.trim() ?? "UTC";
+  const timePart = rawReset.replace(/\s*\([^)]+\)\s*$/, "").trim();
+  const parsedTime = parseClockTime(timePart);
+  if (!parsedTime) {
+    return null;
+  }
+
+  const nowParts = getZonedDateParts(new Date(), timezone);
+  if (!nowParts) {
+    return null;
+  }
+
+  let candidate = zonedTimeToDate(
+    {
+      year: nowParts.year,
+      month: nowParts.month,
+      day: nowParts.day,
+      hour: parsedTime.hour,
+      minute: parsedTime.minute,
+    },
+    timezone,
+  );
+
+  if (!candidate) {
+    return null;
+  }
+
+  if (candidate.getTime() <= Date.now()) {
+    const tomorrow = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + 1));
+    const tomorrowParts = getZonedDateParts(tomorrow, timezone);
+    if (!tomorrowParts) {
+      return null;
+    }
+
+    candidate = zonedTimeToDate(
+      {
+        year: tomorrowParts.year,
+        month: tomorrowParts.month,
+        day: tomorrowParts.day,
+        hour: parsedTime.hour,
+        minute: parsedTime.minute,
+      },
+      timezone,
+    );
+  }
+
+  return candidate?.toISOString() ?? null;
+}
+
+function parseClockTime(value: string): { hour: number; minute: number } | null {
+  const trimmed = value.trim().toLowerCase();
+  const match = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!match) {
+    return null;
+  }
+
+  let hour = Number(match[1]);
+  const minute = Number(match[2] ?? "0");
+  const meridiem = match[3]?.toLowerCase();
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  if (meridiem) {
+    if (hour < 1 || hour > 12) {
+      return null;
+    }
+    if (meridiem === "am") {
+      hour = hour === 12 ? 0 : hour;
+    } else {
+      hour = hour === 12 ? 12 : hour + 12;
+    }
+  } else if (hour > 23) {
+    return null;
+  }
+
+  return { hour, minute };
+}
+
+function getZonedDateParts(
+  date: Date,
+  timezone: string,
+): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+} | null {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    });
+    const parts = Object.fromEntries(
+      formatter
+        .formatToParts(date)
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, part.value]),
+    );
+
+    return {
+      year: Number(parts.year),
+      month: Number(parts.month),
+      day: Number(parts.day),
+      hour: Number(parts.hour),
+      minute: Number(parts.minute),
+      second: Number(parts.second),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function zonedTimeToDate(
+  input: {
+    year: number;
+    month: number;
+    day: number;
+    hour: number;
+    minute: number;
+  },
+  timezone: string,
+): Date | null {
+  let guess = Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0);
+
+  for (let attempts = 0; attempts < 3; attempts++) {
+    const zoned = getZonedDateParts(new Date(guess), timezone);
+    if (!zoned) {
+      return null;
+    }
+
+    const desiredUtc = Date.UTC(
+      input.year,
+      input.month - 1,
+      input.day,
+      input.hour,
+      input.minute,
+      0,
+    );
+    const actualUtc = Date.UTC(
+      zoned.year,
+      zoned.month - 1,
+      zoned.day,
+      zoned.hour,
+      zoned.minute,
+      zoned.second,
+    );
+    const diff = desiredUtc - actualUtc;
+    if (diff === 0) {
+      return new Date(guess);
+    }
+    guess += diff;
+  }
+
+  return new Date(guess);
 }
 
 // ─── Modification Application ───
 
-export function applyModifications(
-  text: string,
-  modifications: Modification[],
-): string {
+export function applyModifications(text: string, modifications: Modification[]): string {
   let result = text;
   for (const mod of modifications) {
     switch (mod.type) {
@@ -690,7 +1169,9 @@ export function applyModifications(
         if (mod.pattern) {
           try {
             result = result.replace(new RegExp(mod.pattern, "g"), mod.value);
-          } catch { /* invalid regex */ }
+          } catch {
+            // invalid regex
+          }
         }
         break;
       case "wrap":

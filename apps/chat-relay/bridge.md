@@ -39,6 +39,7 @@ bun run dev
 ```
 
 This starts:
+
 - **Bun backend** on `http://localhost:4400`
 - **Vite dev server** on `http://localhost:4401`
 
@@ -69,7 +70,7 @@ You're in. Create a chat pair and hit Start.
 1. The Bun server authenticates with T3 via `POST /api/auth/bootstrap/bearer`
 2. It creates two threads in T3 (Thread A and Thread B)
 3. Sends the initial message to Thread A via `POST /api/orchestration/dispatch`
-4. Polls `GET /api/orchestration/snapshot` every 500ms to detect turn completion
+4. Polls `GET /api/orchestration/snapshot` every 2000ms to detect turn completion
 5. When Thread A's assistant response is complete:
    - Checks for stop signal (regex match)
    - Applies configured modifications (prefix / suffix / replace / wrap)
@@ -77,34 +78,60 @@ You're in. Create a chat pair and hit Start.
 6. Same in reverse when Thread B completes
 7. Repeats until: stop signal detected, max turns reached, or manual stop
 
+### Overnight Reliability
+
+The relay now persists enough runtime state to recover after a backend restart:
+
+- Active pairs keep their pending outbound turn on disk
+- If the relay server restarts mid-run, it rehydrates pairs and resumes polling or retry timers
+- Usage-limit pauses are treated as **paused** instead of terminal **error**
+- Paused pairs auto-resume when the reset time is reached, or you can manually click **Resume**
+
+### Usage-Limit Recovery
+
+If Codex returns a message like:
+
+```text
+You've hit your limit · resets 8pm (Europe/Zurich)
+```
+
+the relay will:
+
+1. Pause the pair instead of marking it failed
+2. Parse the reset time when possible
+3. Keep the exact pending outbound turn in persistent state
+4. Retry that same turn automatically once the limit window resets
+
+If the reset time cannot be parsed, the pair stays paused and can still be resumed manually.
+
 ---
 
 ## Configuration Reference
 
 ### Pair Settings
 
-| Field | Description |
-|-------|-------------|
-| **Pair Name** | Human-readable label for this pair |
-| **Project** | T3 project to create threads under |
-| **Provider** | `Claude Agent` or `Codex` |
-| **Model** | Which model to use (e.g. `claude-sonnet-4-6`) |
-| **Runtime Mode** | `Full Access` / `Auto-Accept Edits` / `Approval Required` |
-| **Thread A / B Label** | Display names for each side |
-| **Initial Message** | First message sent to Thread A to kick things off |
-| **Stop Signal** | Regex — if an assistant response matches, the relay stops |
-| **Max Turns** | Auto-stop after N full round-trips (0 = unlimited) |
+| Field                  | Description                                               |
+| ---------------------- | --------------------------------------------------------- |
+| **Pair Name**          | Human-readable label for this pair                        |
+| **Project**            | T3 project to create threads under                        |
+| **Provider**           | `Claude Agent` or `Codex`                                 |
+| **Model**              | Which model to use (e.g. `claude-sonnet-4-6`)             |
+| **Runtime Mode**       | `Full Access` / `Auto-Accept Edits` / `Approval Required` |
+| **Thread A / B Label** | Display names for each side                               |
+| **Initial Message**    | First message sent to Thread A to kick things off         |
+| **Stop Signal**        | Regex — if an assistant response matches, the relay stops |
+| **Max Turns**          | Auto-stop after N full round-trips (0 = unlimited)        |
 
 ### Modifications
 
 Applied to the assistant's output before relaying it to the other thread:
 
-| Type | Behavior |
-|------|----------|
-| **Prefix** | Prepends text before the message |
-| **Suffix** | Appends text after the message |
+| Type        | Behavior                                   |
+| ----------- | ------------------------------------------ |
+| **Prefix**  | Prepends text before the message           |
+| **Suffix**  | Appends text after the message             |
 | **Replace** | Regex find-and-replace on the message text |
-| **Wrap** | Template with `{{message}}` placeholder |
+| **Wrap**    | Template with `{{message}}` placeholder    |
 
 Modifications are configured per-direction: A→B and B→A independently.
 
@@ -142,10 +169,10 @@ bun apps/server/src/bin.ts auth pairing create --token-only   # get a token
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RELAY_SERVER_PORT` | `4400` | Bun backend port |
-| `RELAY_CLIENT_PORT` | `4401` | Vite dev server port |
+| Variable            | Default | Description          |
+| ------------------- | ------- | -------------------- |
+| `RELAY_SERVER_PORT` | `4400`  | Bun backend port     |
+| `RELAY_CLIENT_PORT` | `4401`  | Vite dev server port |
 
 ---
 
@@ -162,15 +189,19 @@ bun run start          # serves everything from :4400
 ## Troubleshooting
 
 **"T3 authentication failed"**
+
 - The pairing token is one-time-use. If it was already used (e.g. by a browser),
   generate a new one: `bun apps/server/src/bin.ts auth pairing create --token-only`
 
 **"Not connected to T3"**
+
 - Make sure the T3 server is running on the URL you entered
 - Check that the port matches (`--port 3773`)
 
 **No projects in the dropdown**
+
 - T3 needs at least one project. Open the T3 web UI and add a folder as a project first.
 
 **Port already in use**
+
 - Kill stale processes: `lsof -ti :4400 -ti :4401 | xargs kill -9`

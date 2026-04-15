@@ -51,9 +51,7 @@ export class T3Client {
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(
-        `T3 authentication failed (${res.status}): ${text}`,
-      );
+      throw new Error(`T3 authentication failed (${res.status}): ${text}`);
     }
 
     const data = await res.json();
@@ -94,9 +92,7 @@ export class T3Client {
   async getSnapshot(): Promise<T3Snapshot> {
     let res: Response;
     try {
-      res = await this.authedFetch(
-        `${this.baseUrl}/api/orchestration/snapshot`,
-      );
+      res = await this.authedFetch(`${this.baseUrl}/api/orchestration/snapshot`);
     } catch (err) {
       this._consecutiveFailures++;
       throw err;
@@ -104,9 +100,7 @@ export class T3Client {
     if (!res.ok) {
       this._consecutiveFailures++;
       const text = await res.text();
-      throw new Error(
-        `Failed to get snapshot (${res.status}): ${text}`,
-      );
+      throw new Error(`Failed to get snapshot (${res.status}): ${text}`);
     }
     this._consecutiveFailures = 0;
     return res.json();
@@ -119,14 +113,11 @@ export class T3Client {
   async dispatch(command: Record<string, unknown>): Promise<{ sequence: number }> {
     let res: Response;
     try {
-      res = await this.authedFetch(
-        `${this.baseUrl}/api/orchestration/dispatch`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(command),
-        },
-      );
+      res = await this.authedFetch(`${this.baseUrl}/api/orchestration/dispatch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(command),
+      });
     } catch (err) {
       this._consecutiveFailures++;
       throw err;
@@ -135,9 +126,7 @@ export class T3Client {
     if (!res.ok) {
       this._consecutiveFailures++;
       const text = await res.text();
-      throw new Error(
-        `Dispatch failed (${res.status}): ${text}`,
-      );
+      throw new Error(`Dispatch failed (${res.status}): ${text}`);
     }
 
     this._consecutiveFailures = 0;
@@ -243,10 +232,7 @@ export class T3Client {
 
   private static readonly FETCH_TIMEOUT_MS = 8_000;
 
-  private async authedFetch(
-    url: string,
-    init?: RequestInit,
-  ): Promise<Response> {
+  private async authedFetch(url: string, init?: RequestInit): Promise<Response> {
     if (!this.bearerToken) {
       throw new Error("Not authenticated with T3. Call authenticate() first.");
     }
