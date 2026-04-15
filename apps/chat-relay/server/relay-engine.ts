@@ -37,12 +37,14 @@ interface ParsedUsageLimit {
 export class RelayEngine {
   private pairs: Map<string, ChatPair> = new Map();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
   private t3Client: T3Client | null = null;
   private broadcast: BroadcastFn;
   private cachedProjects: T3Project[] = [];
   private cachedThreads: ThreadSummary[] = [];
   private tickInFlight = false;
+  private lastSnapshotSequence = -1;
 
   /** Tracks which turn we're waiting on, per thread */
   private pendingTurns: Map<string, PendingTurnState> = new Map();
@@ -52,6 +54,8 @@ export class RelayEngine {
   private static readonly RECOVERY_THRESHOLD = 3;
   private static readonly MAX_CONSECUTIVE_FAILURES = 15;
   private static readonly POLL_INTERVAL_MS = 2_000;
+  /** Background refresh for projects/threads when no pairs are actively running. */
+  private static readonly REFRESH_INTERVAL_MS = 10_000;
   private static readonly DEFAULT_USAGE_LIMIT_RETRY_MS = 5 * 60 * 1000;
   private static readonly MAX_TIMER_DELAY_MS = 2_147_483_647;
 
@@ -84,7 +88,9 @@ export class RelayEngine {
 
       this.hydrateFromPersisted(state.pairs, snapshot.threads);
       this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
+      this.lastSnapshotSequence = snapshot.snapshotSequence;
       await this.restoreRuntimeState(snapshot.threads);
+      this.startBackgroundRefresh();
 
       this.broadcast({
         type: "connection-status",
@@ -131,8 +137,10 @@ export class RelayEngine {
     }
 
     this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
+    this.lastSnapshotSequence = snapshot.snapshotSequence;
     await this.restoreRuntimeState(snapshot.threads);
     this.persist();
+    this.startBackgroundRefresh();
 
     this.broadcast({
       type: "connection-status",
@@ -162,11 +170,13 @@ export class RelayEngine {
 
     this.pendingTurns.clear();
     this.stopPolling();
+    this.stopBackgroundRefresh();
     this.stopResumeTimer();
     this.t3Client?.disconnect();
     this.t3Client = null;
     this.cachedThreads = [];
     this.tickInFlight = false;
+    this.lastSnapshotSequence = -1;
 
     this.persist();
 
@@ -350,6 +360,50 @@ export class RelayEngine {
     }
   }
 
+  // ─── Background Refresh (projects/threads stay in sync while idle) ───
+
+  private startBackgroundRefresh(): void {
+    this.stopBackgroundRefresh();
+    this.refreshTimer = setInterval(
+      () => void this.refreshSnapshot(),
+      RelayEngine.REFRESH_INTERVAL_MS,
+    );
+  }
+
+  private stopBackgroundRefresh(): void {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+  }
+
+  private async refreshSnapshot(): Promise<void> {
+    if (!this.t3Client) return;
+    // Skip if the fast poll loop is active — it already refreshes the snapshot.
+    if (this.pollTimer) return;
+
+    try {
+      const snapshot = await this.t3Client.getSnapshot();
+
+      // Only broadcast if something actually changed
+      if (snapshot.snapshotSequence === this.lastSnapshotSequence) return;
+      this.lastSnapshotSequence = snapshot.snapshotSequence;
+
+      this.cachedProjects = snapshot.projects.map((p) => ({
+        id: p.id,
+        title: p.title,
+        workspaceRoot: p.workspaceRoot,
+      }));
+      this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
+
+      this.broadcastFullSnapshot();
+    } catch {
+      // Silent — background refresh is best-effort
+    }
+  }
+
+  // ─── Active Turn Polling ───
+
   private async tick(): Promise<void> {
     if (this.tickInFlight || !this.t3Client || this.pendingTurns.size === 0) return;
     this.tickInFlight = true;
@@ -395,6 +449,7 @@ export class RelayEngine {
         workspaceRoot: p.workspaceRoot,
       }));
       this.cachedThreads = this.buildThreadSummaries(snapshot.threads);
+      this.lastSnapshotSequence = snapshot.snapshotSequence;
 
       for (const [threadId, pending] of Array.from(this.pendingTurns.entries())) {
         const thread = snapshot.threads.find((entry: T3Thread) => entry.id === threadId);
