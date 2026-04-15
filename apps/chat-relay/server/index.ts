@@ -10,11 +10,17 @@
  * In production, this server serves the static build from dist-client/.
  */
 
+import { join, dirname } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { RelayEngine } from "./relay-engine";
 import type { ClientMessage, ServerMessage } from "./types";
 
 const PORT = Number(process.env.RELAY_SERVER_PORT ?? 4400);
+
+// Resolve dist-client relative to this file, not CWD.
+// systemd sets WorkingDirectory to repo root but --cwd only affects bun's
+// package.json lookup, not the process CWD — so "./dist-client" would miss.
+const STATIC_DIR = join(dirname(new URL(import.meta.url).pathname), "..", "dist-client");
 
 // ─── WebSocket Client Tracking ───
 // Bun's ServerWebSocket objects must not have arbitrary properties set on them
@@ -121,11 +127,11 @@ const server = Bun.serve<WsData>({
     // In dev mode Vite handles this via its proxy, so these will only
     // be hit in production or when accessing the Bun port directly.
     const filePath = url.pathname === "/" ? "/index.html" : url.pathname;
-    const file = Bun.file(`./dist-client${filePath}`);
+    const file = Bun.file(join(STATIC_DIR, filePath));
     return file.exists().then((exists) => {
       if (exists) return new Response(file);
       // SPA fallback — serve index.html for client-side routes
-      const index = Bun.file("./dist-client/index.html");
+      const index = Bun.file(join(STATIC_DIR, "index.html"));
       return index.exists().then((indexExists) => {
         if (indexExists) return new Response(index);
         return new Response("Not found", { status: 404 });
