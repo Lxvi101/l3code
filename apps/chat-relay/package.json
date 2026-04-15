@@ -7,8 +7,8 @@
     "dev": "concurrently \"bun run dev:server\" \"bun run dev:client\"",
     "dev:server": "bun --watch server/index.ts",
     "dev:client": "vite",
-    "build": "vite build && bun build server/index.ts --outdir dist-server --target bun",
-    "start": "NODE_ENV=production bun dist-server/index.js",
+    "build": "vite build",
+    "start": "NODE_ENV=production bun server/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
