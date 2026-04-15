@@ -117,17 +117,20 @@ const server = Bun.serve<WsData>({
       });
     }
 
-    // In production, serve static files from the Vite build
-    if (process.env.NODE_ENV === "production") {
-      const filePath = url.pathname === "/" ? "/index.html" : url.pathname;
-      const file = Bun.file(`./dist-client${filePath}`);
-      return file.exists().then((exists) => {
-        if (exists) return new Response(file);
-        return new Response(Bun.file("./dist-client/index.html"));
+    // Serve static files from the Vite build (dist-client/).
+    // In dev mode Vite handles this via its proxy, so these will only
+    // be hit in production or when accessing the Bun port directly.
+    const filePath = url.pathname === "/" ? "/index.html" : url.pathname;
+    const file = Bun.file(`./dist-client${filePath}`);
+    return file.exists().then((exists) => {
+      if (exists) return new Response(file);
+      // SPA fallback — serve index.html for client-side routes
+      const index = Bun.file("./dist-client/index.html");
+      return index.exists().then((indexExists) => {
+        if (indexExists) return new Response(index);
+        return new Response("Not found", { status: 404 });
       });
-    }
-
-    return new Response("Not found", { status: 404 });
+    });
   },
 
   websocket: {
