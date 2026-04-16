@@ -25,6 +25,7 @@ interface RelayActions {
   startPair: (pairId: string) => void;
   stopPair: (pairId: string) => void;
   deletePair: (pairId: string) => void;
+  sendMessage: (pairId: string, text: string) => void;
   clearError: () => void;
 }
 
@@ -146,6 +147,10 @@ export function useRelay(): RelayState & RelayActions {
     startPair: useCallback((pairId: string) => send({ type: "start-pair", pairId }), [send]),
     stopPair: useCallback((pairId: string) => send({ type: "stop-pair", pairId }), [send]),
     deletePair: useCallback((pairId: string) => send({ type: "delete-pair", pairId }), [send]),
+    sendMessage: useCallback(
+      (pairId: string, text: string) => send({ type: "send-message", pairId, text }),
+      [send],
+    ),
     clearError: useCallback(() => setError(null), []),
   };
 }

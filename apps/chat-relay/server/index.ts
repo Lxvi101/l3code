@@ -74,6 +74,10 @@ async function handleClientMessage(msg: ClientMessage, ws: ServerWebSocket<WsDat
         await engine.deletePair(msg.pairId);
         break;
       }
+      case "send-message": {
+        await engine.sendMessage(msg.pairId, msg.text);
+        break;
+      }
       default: {
         ws.send(
           JSON.stringify({

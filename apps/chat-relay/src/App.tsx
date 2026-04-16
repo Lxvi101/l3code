@@ -175,6 +175,7 @@ export default function App() {
                 relay.deletePair(id);
                 setSelection(null);
               }}
+              onSendMessage={relay.sendMessage}
             />
           ) : selectedThread ? (
             <ThreadView thread={selectedThread} />

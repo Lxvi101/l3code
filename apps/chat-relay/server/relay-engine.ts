@@ -284,6 +284,46 @@ export class RelayEngine {
     await this.dispatchPendingTurn(pair);
   }
 
+  async sendMessage(pairId: string, text: string): Promise<void> {
+    const pair = this.pairs.get(pairId);
+    if (!pair) throw new Error(`Pair ${pairId} not found`);
+    if (!this.t3Client) throw new Error("Not connected to T3");
+    if (pair.status === "running") throw new Error("Pair is already running");
+
+    // Record the user's message in the chat
+    const userMsg: RelayMessage = {
+      id: crypto.randomUUID(),
+      source: "system",
+      role: "user",
+      originalText: text,
+      timestamp: new Date().toISOString(),
+      turnNumber: pair.turnCount,
+    };
+    pair.messages.push(userMsg);
+    this.broadcast({ type: "new-message", pairId, message: userMsg });
+
+    // Set up dispatch to Thread A
+    pair.pendingDispatch = {
+      side: "A",
+      threadId: pair.threadA.id,
+      text,
+      reason: "relay",
+      sourceSide: null,
+      dispatchedAt: null,
+      retryCount: 0,
+    };
+
+    pair.status = "running";
+    pair.waitingFor = "A";
+    pair.resumeAt = null;
+    delete pair.error;
+    this.broadcastPairUpdate(pair);
+
+    await this.dispatchPendingTurn(pair);
+
+    console.log(`[relay] User injected message into pair "${pair.name}" → Thread A`);
+  }
+
   async stopPair(pairId: string): Promise<void> {
     const pair = this.pairs.get(pairId);
     if (!pair) return;

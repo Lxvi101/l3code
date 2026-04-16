@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CircleStop,
   Play,
@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Clock,
+  Send,
 } from "lucide-react";
 import type { ChatPair } from "../types";
 import { MessageBubble } from "./MessageBubble";
@@ -17,6 +18,7 @@ interface Props {
   onStart: (pairId: string) => void;
   onStop: (pairId: string) => void;
   onDelete: (pairId: string) => void;
+  onSendMessage: (pairId: string, text: string) => void;
 }
 
 const statusConfig = {
@@ -58,8 +60,9 @@ const statusConfig = {
   },
 };
 
-export function ChatPairView({ pair, onStart, onStop, onDelete }: Props) {
+export function ChatPairView({ pair, onStart, onStop, onDelete, onSendMessage }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [messageText, setMessageText] = useState("");
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -212,6 +215,49 @@ export function ChatPairView({ pair, onStart, onStop, onDelete }: Props) {
           </div>
         )}
       </div>
+
+      {/* Message input — shown when not running so you can give new instructions */}
+      {!isRunning && pair.messages.length > 0 && (
+        <div className="border-t border-zinc-800 px-4 py-3">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const text = messageText.trim();
+              if (!text) return;
+              onSendMessage(pair.id, text);
+              setMessageText("");
+            }}
+            className="flex items-end gap-2"
+          >
+            <textarea
+              value={messageText}
+              onChange={(e) => setMessageText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  const text = messageText.trim();
+                  if (!text) return;
+                  onSendMessage(pair.id, text);
+                  setMessageText("");
+                }
+              }}
+              placeholder={`Send new instructions to ${pair.threadA.label}...`}
+              rows={2}
+              className="flex-1 resize-none rounded-lg bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-600"
+            />
+            <button
+              type="submit"
+              disabled={!messageText.trim()}
+              className="flex-shrink-0 rounded-lg bg-zinc-100 p-2.5 text-zinc-900 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              <Send className="size-4" />
+            </button>
+          </form>
+          <p className="mt-1.5 text-xs text-zinc-600">
+            Message goes to {pair.threadA.label}. The relay resumes automatically.
+          </p>
+        </div>
+      )}
 
       {/* Footer: config summary */}
       <div className="border-t border-zinc-800/60 px-6 py-3">

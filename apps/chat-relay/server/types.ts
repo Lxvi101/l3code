@@ -119,7 +119,8 @@ export type ClientMessage =
   | { type: "create-pair"; config: PairConfig }
   | { type: "start-pair"; pairId: string }
   | { type: "stop-pair"; pairId: string }
-  | { type: "delete-pair"; pairId: string };
+  | { type: "delete-pair"; pairId: string }
+  | { type: "send-message"; pairId: string; text: string };
 
 // ─── T3 snapshot types (minimal subset we need) ───
 
