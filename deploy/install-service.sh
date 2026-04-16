@@ -566,12 +566,14 @@ if [[ "$USER_SCOPE" == true ]]; then
   fi
   systemctl --user daemon-reload
   if [[ "$INSTALL_MAIN" == true ]]; then
-    systemctl --user enable --now "${SERVICE_NAME}.service"
-    ok "User service enabled and started"
+    systemctl --user enable "${SERVICE_NAME}.service"
+    systemctl --user restart "${SERVICE_NAME}.service"
+    ok "User service enabled and (re)started"
   fi
   if [[ "$WITH_RELAY" == true ]]; then
-    systemctl --user enable --now "${RELAY_SERVICE_NAME}.service"
-    ok "THE RELAY user service enabled and started"
+    systemctl --user enable "${RELAY_SERVICE_NAME}.service"
+    systemctl --user restart "${RELAY_SERVICE_NAME}.service"
+    ok "THE RELAY user service enabled and (re)started"
   fi
   warn "For start-on-boot without login, run once: ${BOLD}loginctl enable-linger ${USER_NAME}${RESET}"
 else
@@ -583,12 +585,14 @@ else
   fi
   sudo systemctl daemon-reload
   if [[ "$INSTALL_MAIN" == true ]]; then
-    sudo systemctl enable --now "${SERVICE_NAME}.service"
-    ok "System service enabled and started"
+    sudo systemctl enable "${SERVICE_NAME}.service"
+    sudo systemctl restart "${SERVICE_NAME}.service"
+    ok "System service enabled and (re)started"
   fi
   if [[ "$WITH_RELAY" == true ]]; then
-    sudo systemctl enable --now "${RELAY_SERVICE_NAME}.service"
-    ok "THE RELAY system service enabled and started"
+    sudo systemctl enable "${RELAY_SERVICE_NAME}.service"
+    sudo systemctl restart "${RELAY_SERVICE_NAME}.service"
+    ok "THE RELAY system service enabled and (re)started"
   fi
 fi
 
