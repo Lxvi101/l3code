@@ -222,8 +222,8 @@ function ModificationEditor({
 // ─── Main Dialog ───
 
 export function CreatePairDialog({
-  projects,
-  templates,
+  projects = [],
+  templates = [],
   onClose,
   onCreate,
   onSaveTemplate,

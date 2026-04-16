@@ -64,10 +64,10 @@ export function useRelay(): RelayState & RelayActions {
           break;
 
         case "snapshot":
-          setPairs(msg.pairs);
-          setProjects(msg.projects);
-          setThreads(msg.threads);
-          setTemplates(msg.templates);
+          setPairs(msg.pairs ?? []);
+          setProjects(msg.projects ?? []);
+          setThreads(msg.threads ?? []);
+          setTemplates(msg.templates ?? []);
           break;
 
         case "pair-created":
@@ -91,11 +91,11 @@ export function useRelay(): RelayState & RelayActions {
           break;
 
         case "threads-updated":
-          setThreads(msg.threads);
+          setThreads(msg.threads ?? []);
           break;
 
         case "templates-updated":
-          setTemplates(msg.templates);
+          setTemplates(msg.templates ?? []);
           break;
 
         case "error":
