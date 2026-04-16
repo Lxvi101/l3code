@@ -39,6 +39,40 @@ brew install --cask t3-code
 yay -S t3code-bin
 ```
 
+## THE RELAY — Agent-to-Agent Chat
+
+THE RELAY lets you pair two AI agents together: one implements, one reviews, and they keep talking to each other until the work is done.
+
+```bash
+# Quick start (from repo root):
+bun run relay
+```
+
+Or deploy alongside T3 Code as a systemd service:
+
+```bash
+./deploy/install-service.sh --with-relay
+```
+
+See [apps/chat-relay/README.md](./apps/chat-relay/README.md) for full docs, and [apps/chat-relay/bridge.md](./apps/chat-relay/bridge.md) for the technical deep dive.
+
+## Deploy (server / Raspberry Pi)
+
+The `deploy/` directory has a one-command installer for systemd:
+
+```bash
+# T3 Code only:
+./deploy/install-service.sh
+
+# T3 Code + THE RELAY:
+./deploy/install-service.sh --with-relay
+
+# Upgrade (pull + rebuild + restart):
+git pull && ./deploy/install-service.sh --yes
+```
+
+Run `./deploy/install-service.sh --help` for all options. Works as both system and user services.
+
 ## Some notes
 
 We are very very early in this project. Expect bugs.
