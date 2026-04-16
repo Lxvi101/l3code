@@ -2,10 +2,12 @@
 export type {
   ChatPair,
   ClientMessage,
+  ModelSelection,
   Modification,
   PairConfig,
   PairStatus,
   RelayMessage,
+  RelayTemplate,
   ServerMessage,
   T3Project,
   ThreadInfo,

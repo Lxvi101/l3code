@@ -78,6 +78,18 @@ async function handleClientMessage(msg: ClientMessage, ws: ServerWebSocket<WsDat
         await engine.sendMessage(msg.pairId, msg.text);
         break;
       }
+      case "save-template": {
+        engine.saveTemplate(msg.template);
+        break;
+      }
+      case "delete-template": {
+        engine.deleteTemplate(msg.templateId);
+        break;
+      }
+      case "import-templates": {
+        engine.importTemplates(msg.templates);
+        break;
+      }
       default: {
         ws.send(
           JSON.stringify({
@@ -153,7 +165,7 @@ const server = Bun.serve<WsData>({
       );
 
       // Send initial state to the newly connected client
-      const { pairs, projects, threads } = engine.getSnapshot();
+      const { pairs, projects, threads, templates } = engine.getSnapshot();
       ws.send(
         JSON.stringify({
           type: "connection-status",
@@ -167,6 +179,7 @@ const server = Bun.serve<WsData>({
           pairs,
           projects,
           threads,
+          templates,
         } satisfies ServerMessage),
       );
     },

@@ -3,6 +3,7 @@ import type {
   ChatPair,
   ClientMessage,
   PairConfig,
+  RelayTemplate,
   ServerMessage,
   T3Project,
   ThreadSummary,
@@ -15,6 +16,7 @@ interface RelayState {
   pairs: ChatPair[];
   projects: T3Project[];
   threads: ThreadSummary[];
+  templates: RelayTemplate[];
   error: string | null;
 }
 
@@ -26,6 +28,9 @@ interface RelayActions {
   stopPair: (pairId: string) => void;
   deletePair: (pairId: string) => void;
   sendMessage: (pairId: string, text: string) => void;
+  saveTemplate: (template: RelayTemplate) => void;
+  deleteTemplate: (templateId: string) => void;
+  importTemplates: (templates: RelayTemplate[]) => void;
   clearError: () => void;
 }
 
@@ -39,6 +44,7 @@ export function useRelay(): RelayState & RelayActions {
   const [pairs, setPairs] = useState<ChatPair[]>([]);
   const [projects, setProjects] = useState<T3Project[]>([]);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [templates, setTemplates] = useState<RelayTemplate[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const send = useCallback((msg: ClientMessage) => {
@@ -61,6 +67,7 @@ export function useRelay(): RelayState & RelayActions {
           setPairs(msg.pairs);
           setProjects(msg.projects);
           setThreads(msg.threads);
+          setTemplates(msg.templates);
           break;
 
         case "pair-created":
@@ -85,6 +92,10 @@ export function useRelay(): RelayState & RelayActions {
 
         case "threads-updated":
           setThreads(msg.threads);
+          break;
+
+        case "templates-updated":
+          setTemplates(msg.templates);
           break;
 
         case "error":
@@ -136,6 +147,7 @@ export function useRelay(): RelayState & RelayActions {
     pairs,
     projects,
     threads,
+    templates,
     error,
 
     connectToT3: useCallback(
@@ -149,6 +161,18 @@ export function useRelay(): RelayState & RelayActions {
     deletePair: useCallback((pairId: string) => send({ type: "delete-pair", pairId }), [send]),
     sendMessage: useCallback(
       (pairId: string, text: string) => send({ type: "send-message", pairId, text }),
+      [send],
+    ),
+    saveTemplate: useCallback(
+      (template: RelayTemplate) => send({ type: "save-template", template }),
+      [send],
+    ),
+    deleteTemplate: useCallback(
+      (templateId: string) => send({ type: "delete-template", templateId }),
+      [send],
+    ),
+    importTemplates: useCallback(
+      (templates: RelayTemplate[]) => send({ type: "import-templates", templates }),
       [send],
     ),
     clearError: useCallback(() => setError(null), []),

@@ -8,18 +8,28 @@ export interface Modification {
   pattern?: string;
 }
 
+export interface ModelSelection {
+  provider: "claudeAgent" | "codex";
+  model: string;
+}
+
 export interface PairConfig {
   name: string;
   /** T3 project ID to create threads under */
   projectId: string;
-  /** Model selection for both threads (e.g. { provider: "claudeAgent", model: "..." }) */
-  modelSelection: {
-    provider: "claudeAgent" | "codex";
-    model: string;
-  };
+  /** Model for Agent A (and fallback for B if modelSelectionB not set) */
+  modelSelection: ModelSelection;
+  /** Optional model override for Agent B (e.g. a smaller/cheaper reviewer model) */
+  modelSelectionB?: ModelSelection;
   runtimeMode: "approval-required" | "auto-accept-edits" | "full-access";
   /** The first message sent to Thread A to kick things off */
   initialMessage: string;
+  /**
+   * Template for Agent B's first prompt. Use {{response}} as placeholder for
+   * Agent A's response. If empty, A's raw response is relayed directly.
+   * Example: "You are reviewing code. Give thorough feedback:\n\n{{response}}"
+   */
+  initialMessageB: string;
   /** Label for Thread A (shown in UI) */
   labelA: string;
   /** Label for Thread B (shown in UI) */
@@ -35,6 +45,18 @@ export interface PairConfig {
   modificationsAtoB: Modification[];
   /** Modifications applied to Thread B's output before sending to Thread A */
   modificationsBtoA: Modification[];
+}
+
+// ─── Templates ───
+
+export interface RelayTemplate {
+  id: string;
+  name: string;
+  description: string;
+  /** Partial config — fields that the template pre-fills */
+  config: Omit<PairConfig, "name" | "projectId">;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ThreadInfo {
@@ -103,12 +125,13 @@ export interface ThreadSummary {
 
 export type ServerMessage =
   | { type: "connection-status"; t3Connected: boolean; t3Url: string | null }
-  | { type: "snapshot"; pairs: ChatPair[]; projects: T3Project[]; threads: ThreadSummary[] }
+  | { type: "snapshot"; pairs: ChatPair[]; projects: T3Project[]; threads: ThreadSummary[]; templates: RelayTemplate[] }
   | { type: "pair-created"; pair: ChatPair }
   | { type: "pair-updated"; pair: ChatPair }
   | { type: "pair-removed"; pairId: string }
   | { type: "new-message"; pairId: string; message: RelayMessage }
   | { type: "threads-updated"; threads: ThreadSummary[] }
+  | { type: "templates-updated"; templates: RelayTemplate[] }
   | { type: "error"; message: string };
 
 // ─── WebSocket protocol: client → server ───
@@ -120,7 +143,10 @@ export type ClientMessage =
   | { type: "start-pair"; pairId: string }
   | { type: "stop-pair"; pairId: string }
   | { type: "delete-pair"; pairId: string }
-  | { type: "send-message"; pairId: string; text: string };
+  | { type: "send-message"; pairId: string; text: string }
+  | { type: "save-template"; template: RelayTemplate }
+  | { type: "delete-template"; templateId: string }
+  | { type: "import-templates"; templates: RelayTemplate[] };
 
 // ─── T3 snapshot types (minimal subset we need) ───
 

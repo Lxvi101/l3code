@@ -201,8 +201,12 @@ export default function App() {
       {showCreateDialog && (
         <CreatePairDialog
           projects={relay.projects}
+          templates={relay.templates}
           onClose={() => setShowCreateDialog(false)}
           onCreate={relay.createPair}
+          onSaveTemplate={relay.saveTemplate}
+          onDeleteTemplate={relay.deleteTemplate}
+          onImportTemplates={relay.importTemplates}
         />
       )}
     </div>

@@ -7,12 +7,14 @@
  */
 
 import { T3Client } from "./t3-client";
-import { loadState, saveState, type PersistedPair, type PersistedState } from "./store";
+import { loadState, saveState, loadTemplates, saveTemplates, type PersistedPair, type PersistedState } from "./store";
 import type {
   ChatPair,
+  ModelSelection,
   Modification,
   PairConfig,
   RelayMessage,
+  RelayTemplate,
   ServerMessage,
   T3Message,
   T3Project,
@@ -54,6 +56,7 @@ export class RelayEngine {
   private broadcast: BroadcastFn;
   private cachedProjects: T3Project[] = [];
   private cachedThreads: ThreadSummary[] = [];
+  private templates: RelayTemplate[] = [];
   private tickInFlight = false;
   private lastSnapshotSequence = -1;
 
@@ -72,6 +75,7 @@ export class RelayEngine {
 
   constructor(broadcast: BroadcastFn) {
     this.broadcast = broadcast;
+    this.templates = loadTemplates();
   }
 
   // ─── Boot: restore persisted state ───
@@ -211,7 +215,7 @@ export class RelayEngine {
       threadId: threadAId,
       projectId: config.projectId,
       title: `[Relay] ${config.name} - ${config.labelA}`,
-      modelSelection: config.modelSelection,
+      modelSelection: this.modelForSide(config, "A"),
       runtimeMode: config.runtimeMode,
     });
 
@@ -219,7 +223,7 @@ export class RelayEngine {
       threadId: threadBId,
       projectId: config.projectId,
       title: `[Relay] ${config.name} - ${config.labelB}`,
-      modelSelection: config.modelSelection,
+      modelSelection: this.modelForSide(config, "B"),
       runtimeMode: config.runtimeMode,
     });
 
@@ -385,12 +389,45 @@ export class RelayEngine {
     console.log(`[relay] Deleted pair ${pairId}`);
   }
 
-  getSnapshot(): { pairs: ChatPair[]; projects: T3Project[]; threads: ThreadSummary[] } {
+  getSnapshot(): { pairs: ChatPair[]; projects: T3Project[]; threads: ThreadSummary[]; templates: RelayTemplate[] } {
     return {
       pairs: Array.from(this.pairs.values()),
       projects: this.cachedProjects,
       threads: this.cachedThreads,
+      templates: this.templates,
     };
+  }
+
+  // ─── Templates ───
+
+  saveTemplate(template: RelayTemplate): void {
+    const idx = this.templates.findIndex((t) => t.id === template.id);
+    if (idx >= 0) {
+      this.templates[idx] = template;
+    } else {
+      this.templates.push(template);
+    }
+    saveTemplates(this.templates);
+    this.broadcast({ type: "templates-updated", templates: this.templates });
+  }
+
+  deleteTemplate(templateId: string): void {
+    this.templates = this.templates.filter((t) => t.id !== templateId);
+    saveTemplates(this.templates);
+    this.broadcast({ type: "templates-updated", templates: this.templates });
+  }
+
+  importTemplates(incoming: RelayTemplate[]): void {
+    for (const t of incoming) {
+      const idx = this.templates.findIndex((existing) => existing.id === t.id);
+      if (idx >= 0) {
+        this.templates[idx] = t;
+      } else {
+        this.templates.push(t);
+      }
+    }
+    saveTemplates(this.templates);
+    this.broadcast({ type: "templates-updated", templates: this.templates });
   }
 
   // ─── Polling Loop ───
@@ -667,7 +704,18 @@ export class RelayEngine {
     const modifications =
       side === "A" ? pair.config.modificationsAtoB : pair.config.modificationsBtoA;
 
-    const modifiedText = applyModifications(responseText, modifications);
+    // On the first A→B relay, apply initialMessageB template if configured
+    let textForRelay = responseText;
+    const isFirstAtoBRelay =
+      side === "A" && pair.turnCount === 0 && pair.config.initialMessageB;
+    if (isFirstAtoBRelay) {
+      textForRelay = pair.config.initialMessageB.replace(
+        /\{\{response\}\}/g,
+        responseText,
+      );
+    }
+
+    const modifiedText = applyModifications(textForRelay, modifications);
     if (modifiedText !== responseText) {
       const relayedMessage: RelayMessage = {
         id: crypto.randomUUID(),
@@ -886,7 +934,7 @@ export class RelayEngine {
         threadId: pending.threadId,
         text: pending.text,
         runtimeMode: pair.config.runtimeMode,
-        modelSelection: pair.config.modelSelection,
+        modelSelection: this.modelForSide(pair.config, pending.side),
       });
 
       this.pendingTurns.set(pending.threadId, {
@@ -1059,6 +1107,7 @@ export class RelayEngine {
       pairs: Array.from(this.pairs.values()),
       projects: this.cachedProjects,
       threads: this.cachedThreads,
+      templates: this.templates,
     });
   }
 
@@ -1084,6 +1133,11 @@ export class RelayEngine {
 
   private labelForSide(pair: ChatPair, side: PairSide): string {
     return side === "A" ? pair.threadA.label : pair.threadB.label;
+  }
+
+  private modelForSide(config: PairConfig, side: PairSide): ModelSelection {
+    if (side === "B" && config.modelSelectionB) return config.modelSelectionB;
+    return config.modelSelection;
   }
 
   private formatUsagePauseMessage(

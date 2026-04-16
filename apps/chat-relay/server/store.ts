@@ -7,7 +7,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import type { PairConfig, PairStatus, PendingDispatch } from "./types";
+import type { PairConfig, PairStatus, PendingDispatch, RelayTemplate } from "./types";
 
 // ─── Persisted shapes (minimal — no runtime state like messages) ───
 
@@ -92,5 +92,30 @@ export function saveState(state: PersistedState): void {
     writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
   } catch (err) {
     console.error("[store] Failed to save state:", err);
+  }
+}
+
+// ─── Templates ───
+
+const TEMPLATES_FILE = join(dirname(new URL(import.meta.url).pathname), "..", ".chat-relay-templates.json");
+
+export function loadTemplates(): RelayTemplate[] {
+  try {
+    if (!existsSync(TEMPLATES_FILE)) return [];
+    const raw = readFileSync(TEMPLATES_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveTemplates(templates: RelayTemplate[]): void {
+  try {
+    const dir = dirname(TEMPLATES_FILE);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(TEMPLATES_FILE, JSON.stringify(templates, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[store] Failed to save templates:", err);
   }
 }
