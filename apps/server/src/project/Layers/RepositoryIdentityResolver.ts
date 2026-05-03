@@ -1,6 +1,9 @@
 import type { RepositoryIdentity } from "@t3tools/contracts";
 import { Cache, Duration, Effect, Exit, Layer } from "effect";
-import { detectGitHostingProviderFromRemoteUrl, normalizeGitRemoteUrl } from "@t3tools/shared/git";
+import {
+  detectSourceControlProviderFromGitRemoteUrl,
+  normalizeGitRemoteUrl,
+} from "@t3tools/shared/git";
 
 import { runProcess } from "../../processRunner.ts";
 import {
@@ -42,9 +45,10 @@ function pickPrimaryRemote(
 function buildRepositoryIdentity(input: {
   readonly remoteName: string;
   readonly remoteUrl: string;
+  readonly rootPath: string;
 }): RepositoryIdentity {
   const canonicalKey = normalizeGitRemoteUrl(input.remoteUrl);
-  const hostingProvider = detectGitHostingProviderFromRemoteUrl(input.remoteUrl);
+  const sourceControlProvider = detectSourceControlProviderFromGitRemoteUrl(input.remoteUrl);
   const repositoryPath = canonicalKey.split("/").slice(1).join("/");
   const repositoryPathSegments = repositoryPath.split("/").filter((segment) => segment.length > 0);
   const [owner] = repositoryPathSegments;
@@ -57,8 +61,9 @@ function buildRepositoryIdentity(input: {
       remoteName: input.remoteName,
       remoteUrl: input.remoteUrl,
     },
+    rootPath: input.rootPath,
     ...(repositoryPath ? { displayName: repositoryPath } : {}),
-    ...(hostingProvider ? { provider: hostingProvider.kind } : {}),
+    ...(sourceControlProvider ? { provider: sourceControlProvider.kind } : {}),
     ...(owner ? { owner } : {}),
     ...(repositoryName ? { name: repositoryName } : {}),
   };
@@ -66,7 +71,7 @@ function buildRepositoryIdentity(input: {
 
 const DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY = 512;
 const DEFAULT_POSITIVE_CACHE_TTL = Duration.minutes(1);
-const DEFAULT_NEGATIVE_CACHE_TTL = Duration.seconds(10);
+const DEFAULT_NEGATIVE_CACHE_TTL = Duration.minutes(1);
 
 interface RepositoryIdentityResolverOptions {
   readonly cacheCapacity?: number;
@@ -108,7 +113,7 @@ async function resolveRepositoryIdentityFromCacheKey(
     }
 
     const remote = pickPrimaryRemote(parseRemoteFetchUrls(remoteResult.stdout));
-    return remote ? buildRepositoryIdentity(remote) : null;
+    return remote ? buildRepositoryIdentity({ ...remote, rootPath: cacheKey }) : null;
   } catch {
     return null;
   }

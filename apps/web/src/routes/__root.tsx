@@ -12,15 +12,26 @@ import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
+import { CommandPalette } from "../components/CommandPalette";
 import {
   SlowRpcAckToastCoordinator,
   WebSocketConnectionCoordinator,
   WebSocketConnectionSurface,
 } from "../components/WebSocketConnectionSurface";
 import { Button } from "../components/ui/button";
-import { AnchoredToastProvider, ToastProvider, toastManager } from "../components/ui/toast";
+import {
+  AnchoredToastProvider,
+  stackedThreadToast,
+  ToastProvider,
+  toastManager,
+} from "../components/ui/toast";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { readLocalApi } from "../localApi";
+import { useSettings } from "../hooks/useSettings";
+import {
+  deriveLogicalProjectKeyFromSettings,
+  derivePhysicalProjectKeyFromPath,
+} from "../logicalProject";
 import {
   getServerConfigUpdatedNotification,
   ServerConfigUpdatedNotification,
@@ -93,9 +104,11 @@ function RootRouteView() {
         <WebSocketConnectionCoordinator />
         <SlowRpcAckToastCoordinator />
         <WebSocketConnectionSurface>
-          <AppSidebarLayout>
-            <Outlet />
-          </AppSidebarLayout>
+          <CommandPalette>
+            <AppSidebarLayout>
+              <Outlet />
+            </AppSidebarLayout>
+          </CommandPalette>
         </WebSocketConnectionSurface>
       </AnchoredToastProvider>
     </ToastProvider>
@@ -201,6 +214,10 @@ function EventRouter() {
   const setActiveEnvironmentId = useStore((store) => store.setActiveEnvironmentId);
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
+  const projectGroupingSettings = useSettings((settings) => ({
+    sidebarProjectGroupingMode: settings.sidebarProjectGroupingMode,
+    sidebarProjectGroupingOverrides: settings.sidebarProjectGroupingOverrides,
+  }));
   const readPathname = useEffectEvent(() => pathname);
   const handledBootstrapThreadIdRef = useRef<string | null>(null);
   const seenServerConfigUpdateIdRef = useRef(getServerConfigUpdatedNotification()?.id ?? 0);
@@ -221,14 +238,21 @@ function EventRouter() {
       if (!payload.bootstrapProjectId || !payload.bootstrapThreadId) {
         return;
       }
-      useUiStateStore
-        .getState()
-        .setProjectExpanded(
-          scopedProjectKey(
-            scopeProjectRef(payload.environment.environmentId, payload.bootstrapProjectId),
-          ),
-          true,
+      const bootstrapEnvironmentState =
+        useStore.getState().environmentStateById[payload.environment.environmentId];
+      const bootstrapProject =
+        bootstrapEnvironmentState?.projectById[payload.bootstrapProjectId] ?? null;
+      const bootstrapProjectKey =
+        (bootstrapProject
+          ? deriveLogicalProjectKeyFromSettings(bootstrapProject, projectGroupingSettings)
+          : null) ??
+        (serverConfig?.cwd
+          ? derivePhysicalProjectKeyFromPath(payload.environment.environmentId, serverConfig.cwd)
+          : null) ??
+        scopedProjectKey(
+          scopeProjectRef(payload.environment.environmentId, payload.bootstrapProjectId),
         );
+      useUiStateStore.getState().setProjectExpanded(bootstrapProjectKey, true);
 
       if (readPathname() !== "/") {
         return;
@@ -271,37 +295,42 @@ function EventRouter() {
         return;
       }
 
-      toastManager.add({
-        type: "warning",
-        title: "Invalid keybindings configuration",
-        description: issue.message,
-        actionProps: {
-          children: "Open keybindings.json",
-          onClick: () => {
-            const api = readLocalApi();
-            if (!api) {
-              return;
-            }
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Invalid keybindings configuration",
+          description: issue.message,
+          actionVariant: "outline",
+          actionProps: {
+            children: "Open keybindings.json",
+            onClick: () => {
+              const api = readLocalApi();
+              if (!api) {
+                return;
+              }
 
-            void Promise.resolve(serverConfig ?? api.server.getConfig())
-              .then((config) => {
-                const editor = resolveAndPersistPreferredEditor(config.availableEditors);
-                if (!editor) {
-                  throw new Error("No available editors found.");
-                }
-                return api.shell.openInEditor(config.keybindingsConfigPath, editor);
-              })
-              .catch((error) => {
-                toastManager.add({
-                  type: "error",
-                  title: "Unable to open keybindings file",
-                  description:
-                    error instanceof Error ? error.message : "Unknown error opening file.",
+              void Promise.resolve(serverConfig ?? api.server.getConfig())
+                .then((config) => {
+                  const editor = resolveAndPersistPreferredEditor(config.availableEditors);
+                  if (!editor) {
+                    throw new Error("No available editors found.");
+                  }
+                  return api.shell.openInEditor(config.keybindingsConfigPath, editor);
+                })
+                .catch((error) => {
+                  toastManager.add(
+                    stackedThreadToast({
+                      type: "error",
+                      title: "Unable to open keybindings file",
+                      description:
+                        error instanceof Error ? error.message : "Unknown error opening file.",
+                    }),
+                  );
                 });
-              });
+            },
           },
-        },
-      });
+        }),
+      );
     },
   );
 

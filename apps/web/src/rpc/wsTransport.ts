@@ -12,6 +12,7 @@ import {
 import { RpcClient } from "effect/unstable/rpc";
 
 import { ClientTracingLive } from "../observability/clientTracing";
+import { clearAllTrackedRpcRequests } from "./requestLatencyState";
 import {
   createWsRpcProtocolLayer,
   makeWsRpcProtocolClient,
@@ -52,6 +53,8 @@ export class WsTransport {
   private disposed = false;
   private hasReportedTransportDisconnect = false;
   private reconnectChain: Promise<void> = Promise.resolve();
+  private nextSessionId = 0;
+  private activeSessionId = 0;
   private session: TransportSession;
 
   constructor(
@@ -121,6 +124,7 @@ export class WsTransport {
           return;
         }
 
+        const session = this.session;
         try {
           if (hasReceivedValue) {
             try {
@@ -130,7 +134,6 @@ export class WsTransport {
             }
           }
 
-          const session = this.session;
           const runningStream = this.runStreamOnSession(
             session,
             connect,
@@ -148,6 +151,10 @@ export class WsTransport {
           cancelCurrentStream = NOOP;
           if (!active || this.disposed) {
             return;
+          }
+
+          if (session !== this.session) {
+            continue;
           }
 
           const formattedError = formatErrorMessage(error);
@@ -185,6 +192,7 @@ export class WsTransport {
         throw new Error("Transport disposed");
       }
 
+      clearAllTrackedRpcRequests();
       const previousSession = this.session;
       this.session = this.createSession();
       await this.closeSession(previousSession);
@@ -209,8 +217,17 @@ export class WsTransport {
   }
 
   private createSession(): TransportSession {
+    const sessionId = this.nextSessionId + 1;
+    this.nextSessionId = sessionId;
+    this.activeSessionId = sessionId;
     const runtime = ManagedRuntime.make(
-      Layer.mergeAll(createWsRpcProtocolLayer(this.url, this.lifecycleHandlers), ClientTracingLive),
+      Layer.mergeAll(
+        createWsRpcProtocolLayer(this.url, {
+          ...this.lifecycleHandlers,
+          isActive: () => !this.disposed && this.activeSessionId === sessionId,
+        }),
+        ClientTracingLive,
+      ),
     );
     const clientScope = runtime.runSync(Scope.make());
     return {

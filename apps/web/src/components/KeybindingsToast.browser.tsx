@@ -7,6 +7,8 @@ import {
   type MessageId,
   type OrchestrationReadModel,
   type ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   type ServerConfig,
   type ServerLifecycleWelcomePayload,
   type ThreadId,
@@ -72,7 +74,8 @@ function createBaseServerConfig(): ServerConfig {
     issues: [],
     providers: [
       {
-        provider: "codex",
+        driver: ProviderDriverKind.make("codex"),
+        instanceId: ProviderInstanceId.make("codex"),
         enabled: true,
         installed: true,
         version: "0.116.0",
@@ -95,10 +98,33 @@ function createBaseServerConfig(): ServerConfig {
       ...DEFAULT_SERVER_SETTINGS,
       enableAssistantStreaming: false,
       defaultThreadEnvMode: "local" as const,
-      textGenerationModelSelection: { provider: "codex" as const, model: "gpt-5.4-mini" },
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4-mini",
+      },
       providers: {
-        codex: { enabled: true, binaryPath: "", homePath: "", customModels: [] },
-        claudeAgent: { enabled: true, binaryPath: "", customModels: [] },
+        codex: {
+          enabled: true,
+          binaryPath: "",
+          homePath: "",
+          shadowHomePath: "",
+          customModels: [],
+        },
+        claudeAgent: {
+          enabled: true,
+          binaryPath: "",
+          homePath: "",
+          customModels: [],
+          launchArgs: "",
+        },
+        cursor: { enabled: true, binaryPath: "", apiEndpoint: "", customModels: [] },
+        opencode: {
+          enabled: true,
+          binaryPath: "",
+          serverUrl: "",
+          serverPassword: "",
+          customModels: [],
+        },
       },
     },
   };
@@ -113,7 +139,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         title: "Project",
         workspaceRoot: "/repo/project",
         defaultModelSelection: {
-          provider: "codex",
+          instanceId: ProviderInstanceId.make("codex"),
           model: "gpt-5",
         },
         scripts: [],
@@ -128,7 +154,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         projectId: PROJECT_ID,
         title: "Test thread",
         modelSelection: {
-          provider: "codex",
+          instanceId: ProviderInstanceId.make("codex"),
           model: "gpt-5",
         },
         interactionMode: "default",
@@ -169,6 +195,43 @@ function createMinimalSnapshot(): OrchestrationReadModel {
   };
 }
 
+function toShellSnapshot(snapshot: OrchestrationReadModel) {
+  return {
+    snapshotSequence: snapshot.snapshotSequence,
+    projects: snapshot.projects.map((project) => ({
+      id: project.id,
+      title: project.title,
+      workspaceRoot: project.workspaceRoot,
+      repositoryIdentity: project.repositoryIdentity ?? null,
+      defaultModelSelection: project.defaultModelSelection,
+      scripts: project.scripts,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    })),
+    threads: snapshot.threads.map((thread) => ({
+      id: thread.id,
+      projectId: thread.projectId,
+      title: thread.title,
+      modelSelection: thread.modelSelection,
+      runtimeMode: thread.runtimeMode,
+      interactionMode: thread.interactionMode,
+      branch: thread.branch,
+      worktreePath: thread.worktreePath,
+      latestTurn: thread.latestTurn,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+      archivedAt: thread.archivedAt,
+      session: thread.session,
+      latestUserMessageAt:
+        thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+    })),
+    updatedAt: snapshot.updatedAt,
+  };
+}
+
 function buildFixture(): TestFixture {
   return {
     snapshot: createMinimalSnapshot(),
@@ -190,19 +253,16 @@ function buildFixture(): TestFixture {
 }
 
 function resolveWsRpc(tag: string): unknown {
-  if (tag === ORCHESTRATION_WS_METHODS.getSnapshot) {
-    return fixture.snapshot;
-  }
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }
-  if (tag === WS_METHODS.gitListBranches) {
+  if (tag === WS_METHODS.vcsListRefs) {
     return {
       isRepo: true,
-      hasOriginRemote: true,
+      hasPrimaryRemote: true,
       nextCursor: null,
       totalCount: 1,
-      branches: [{ name: "main", current: true, isDefault: true, worktreePath: null }],
+      refs: [{ name: "main", current: true, isDefault: true, worktreePath: null }],
     };
   }
   if (tag === WS_METHODS.projectsSearchEntries) {
@@ -426,6 +486,28 @@ describe("Keybindings update toast", () => {
               version: 1,
               type: "snapshot",
               config: fixture.serverConfig,
+            },
+          ];
+        }
+        if (request._tag === ORCHESTRATION_WS_METHODS.subscribeShell) {
+          return [
+            {
+              kind: "snapshot",
+              snapshot: toShellSnapshot(fixture.snapshot),
+            },
+          ];
+        }
+        if (
+          request._tag === ORCHESTRATION_WS_METHODS.subscribeThread &&
+          request.threadId === THREAD_ID
+        ) {
+          return [
+            {
+              kind: "snapshot",
+              snapshot: {
+                snapshotSequence: fixture.snapshot.snapshotSequence,
+                thread: fixture.snapshot.threads[0],
+              },
             },
           ];
         }

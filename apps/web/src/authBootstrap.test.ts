@@ -353,6 +353,34 @@ describe("resolveInitialServerAuthGateState", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("surfaces a friendly error message when an invalid pairing token is submitted", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse(
+        {
+          error: "Invalid bootstrap credential.",
+        },
+        {
+          status: 401,
+        },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { submitServerAuthCredential } = await import("./environments/primary");
+
+    await expect(submitServerAuthCredential("bad-token")).rejects.toThrow(
+      "Invalid pairing token. Check the token and try again.",
+    );
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost/api/auth/bootstrap", {
+      body: JSON.stringify({ credential: "bad-token" }),
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+  });
+
   it("waits for the authenticated session to become observable after silent desktop bootstrap", async () => {
     vi.useFakeTimers();
     const fetchMock = vi
@@ -424,7 +452,7 @@ describe("resolveInitialServerAuthGateState", () => {
     expect(fetchMock.mock.calls[3]?.[0]).toBe("http://localhost:3773/api/auth/session");
   });
 
-  it("revalidates the server session state after a previous authenticated result", async () => {
+  it("memoizes the authenticated gate state after the first successful read", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -459,15 +487,9 @@ describe("resolveInitialServerAuthGateState", () => {
       status: "authenticated",
     });
     await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
-      status: "requires-auth",
-      auth: {
-        policy: "loopback-browser",
-        bootstrapMethods: ["one-time-token"],
-        sessionMethods: ["browser-session-cookie"],
-        sessionCookieName: "t3_session",
-      },
+      status: "authenticated",
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("creates a pairing credential from the authenticated auth endpoint", async () => {
